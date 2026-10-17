@@ -18,6 +18,7 @@ from enrollment_acceptance import check_enrollment
 from sync_acceptance import check_sync
 from screen_acceptance import check_screen
 from browser_acceptance import check_browser
+from company_identity_acceptance import check_company_identity
 
 MAILPIT = "axllent/mailpit:v1.31.4@sha256:b68349e3a014b90c5610bfb26b2ae36f3892d7b8cf25ee140c6c71c98d2fcf48"
 
@@ -31,7 +32,7 @@ def check_identity(binary, directory, env, sql, command, validate_events, fixtur
     captures = {}
     # Interactive fixtures can run for an hour with real client telemetry.
     # Keep their capture finite without applying the short test's 2 MiB budget.
-    log_budget = (32 if fixture_receipt is not None else 2) * 1024 * 1024
+    log_budget = (32 if fixture_receipt is not None else 4) * 1024 * 1024
     http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
         command("docker", "run", "--rm", "--detach", "--name", mailbox, "--user", "10001:10001", "--read-only", "--cap-drop=ALL", "--security-opt", "no-new-privileges:true", "--memory", "128m", "--cpus", "0.5", "--pids-limit", "64", "--publish", "127.0.0.1::1025", "--publish", "127.0.0.1::8025", "--tmpfs", "/data:uid=10001,gid=10001,mode=0700,size=32m", "--env", "MP_DATABASE=/data/mailpit.db", "--env", "MP_MAX_MESSAGES=25", "--log-driver", "local", "--log-opt", "max-size=1m", "--log-opt", "max-file=2", MAILPIT)
@@ -304,7 +305,7 @@ def check_identity(binary, directory, env, sql, command, validate_events, fixtur
             assert server.returncode == 0
             server = start()
 
-        sensitive += check_sync(request, session_issued["session_token"], restart_enrollment, directory, sql, f"http://{host}:{port}")
+        sensitive += check_sync(request, session_issued["session_token"], restart_enrollment, directory, sql, f"http://{host}:{port}", observability_configured="NDS_OBSERVABILITY_CONFIG_FILE" in env)
         sensitive += check_screen(request, session_issued["session_token"], second_session, restart_enrollment, directory, sql, f"http://{host}:{port}")
         sensitive += check_enrollment(request, session_issued["session_token"], second_session, restart_enrollment, directory, sql)
         expired_logout = second_session()
@@ -334,6 +335,8 @@ def check_identity(binary, directory, env, sql, command, validate_events, fixtur
             assert request("/v2/session", token=recent)[0] == 200
             assert request("/v2/session", method="DELETE", token=recent)[0] == 204
             print("Recent-authentication scope passed: aged valid session retains ordinary access after credential-management rejection.")
+        company_secrets, unavailable_invitation = check_company_identity(request, sql, mail_url, http, pepper, restart_enrollment, directory, origin, observability_configured="NDS_OBSERVABILITY_CONFIG_FILE" in env)
+        sensitive += company_secrets
         sql("DELETE FROM nds_auth_limits; DELETE FROM nds_email_challenges;")
         command("docker", "stop", "--time", "5", mailbox)
         created = False
@@ -346,6 +349,7 @@ def check_identity(binary, directory, env, sql, command, validate_events, fixtur
             assert time.monotonic() < deadline, "failed delivery challenge was not invalidated"
             time.sleep(0.05)
         assert request("/v2/auth/email/challenges", {"email": unknown})[0] == 503
+        sensitive += unavailable_invitation()
         logs += stop(server)
         assert server.returncode == 0
         server = None
@@ -363,6 +367,26 @@ def check_identity(binary, directory, env, sql, command, validate_events, fixtur
         assert device_events and all(event["module"] == "devices" for event in device_events)
         assert not any(event.get("event.name") in ("logging.fields.rejected", "logging.event.rejected") for event in events)
         assert any(event.get("event.name") == "identity.session.issued" for event in events)
+        accepted = [event for event in events if event.get("event.name") == "company.invitation.accepted"]
+        assert accepted and len({event["invitation.id"] for event in accepted}) == len(accepted)
+        created_events = {event["invitation.id"]: event for event in events
+                   if event.get("event.name") in {"company.invitation.admin.created", "company.invitation.user.created"}}
+        assert created_events and any(event["invitation.id"] in created_events for event in accepted)
+        for event in created_events.values():
+            assert all(event.get(field) for field in ["operation.id", "user.id", "tenant.id", "device.id", "trace_id", "span_id"])
+            delivered = [item for item in events if item.get("event.name") == "company.invitation.delivery.accepted"
+                         and item.get("invitation.id") == event["invitation.id"]]
+            assert len(delivered) <= 1, "an idempotent command resent its invitation"
+            assert all(item["trace_id"] == event["trace_id"] for item in delivered)
+        for event in accepted:
+            if event["invitation.id"] in created_events:
+                issuer = created_events[event["invitation.id"]]
+                assert event["tenant.id"] == issuer["tenant.id"] and event["user.id"] != issuer["user.id"]
+        for action in ["role_admin", "role_user", "remove"]:
+            action_events = [event for event in events if event.get("event.name") == f"company.member.{action}.completed"]
+            assert action_events and all(event.get("target.user.id") and event.get("operation.id") for event in action_events)
+        assert any(event.get("event.name") == "company.invitation.delivery.recorded_failed" for event in events)
+        print("Company audit acceptance passed: committed creation, one-use acceptance, distinct role/remove actions, verified actor/target scope and SMTP dispatch without replay resends are correlated; no invitation tokens or recipient emails appear in logs.")
         print("Identity acceptance passed: real isolated SMTP mailbox delivery; generic owner/other receipts; atomic replay denial; resend, attempts and expiry; persistent/revoked sessions; immutable bootstrap ownership; socket-only source limits; redacted logs. Live GitHub and external mailbox acceptance remain separate.")
     finally:
         try:

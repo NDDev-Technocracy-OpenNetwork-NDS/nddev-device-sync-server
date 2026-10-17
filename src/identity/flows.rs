@@ -1,7 +1,7 @@
 use super::crypto::equal;
 use nddev_device_sync_application::identity::{
-    ApprovalDisplay, BrowserProof, GithubFlow, GithubFlowStore, GithubPoll, IdentityError, Locale,
-    MAX_PENDING_GITHUB, ProtectedDigest, SecretText,
+    ApprovalDisplay, BrowserProof, GithubApproval, GithubFlow, GithubFlowStore, GithubPoll,
+    IdentityError, Locale, MAX_PENDING_GITHUB, ProtectedDigest, SecretText,
 };
 use std::{collections::BTreeMap, sync::Mutex};
 
@@ -41,12 +41,12 @@ impl GithubFlowStore for Flows {
     fn complete_callback(
         &self,
         id: &str,
-        proof: Option<BrowserProof>,
+        approval: Option<GithubApproval>,
         now: u64,
     ) -> Result<ApprovalDisplay, IdentityError> {
         let mut flows = self.locked(now)?;
         let flow = flows.get_mut(id).ok_or(IdentityError::Denied)?;
-        flow.complete_callback(proof, now)?;
+        flow.complete_callback(approval, now)?;
         Ok(ApprovalDisplay {
             verification_code: flow.verification_code().into(),
             expires_at_ms: flow.expires_at_ms,
@@ -76,7 +76,7 @@ impl GithubFlowStore for Flows {
         let mut flows = self.locked(now)?;
         let flow = flows.get_mut(id).ok_or(IdentityError::Denied)?;
         let outcome = flow.poll(equal(&flow.exchange, &exchange), now);
-        if outcome == Ok(GithubPoll::Approved) {
+        if matches!(&outcome, Ok(GithubPoll::Approved(_))) {
             flows.remove(id);
         }
         outcome
@@ -86,7 +86,9 @@ impl GithubFlowStore for Flows {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use nddev_device_sync_application::identity::{GITHUB_LIFETIME_MS, GITHUB_POLL_MS};
+    use nddev_device_sync_application::identity::{
+        GITHUB_LIFETIME_MS, GITHUB_POLL_MS, Owner, TenantId, UserId, VerifiedGithubIdentity,
+    };
     #[test]
     fn provider_callback_cannot_bypass_browser_proof_or_one_use_exchange() {
         let flows = Flows::default();
@@ -112,7 +114,23 @@ mod tests {
             )
             .unwrap();
         flows.claim_callback(state, 101).unwrap();
-        let display = flows.complete_callback("flow", Some(proof), 102).unwrap();
+        let identity = VerifiedGithubIdentity {
+            provider_id: 42,
+            owner: Owner {
+                user_id: UserId::new("verified-user").unwrap(),
+                tenant_id: TenantId::new("verified-company").unwrap(),
+            },
+        };
+        let display = flows
+            .complete_callback(
+                "flow",
+                Some(GithubApproval {
+                    identity: identity.clone(),
+                    proof,
+                }),
+                102,
+            )
+            .unwrap();
         assert_eq!(display.locale, Locale::Ru);
         assert_eq!(flows.poll("flow", exchange, 103), Ok(GithubPoll::Pending));
         for wrong in [
@@ -131,7 +149,7 @@ mod tests {
         assert!(flows.approve("flow", proof, true, 106).is_err());
         assert_eq!(
             flows.poll("flow", exchange, 103 + GITHUB_POLL_MS),
-            Ok(GithubPoll::Approved)
+            Ok(GithubPoll::Approved(identity))
         );
         assert_eq!(
             flows.poll("flow", exchange, 103 + 2 * GITHUB_POLL_MS),

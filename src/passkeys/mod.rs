@@ -89,24 +89,25 @@ impl Service {
         self.store.revoke(auth, id, now).await
     }
     pub async fn available(&self) -> Result<bool, IdentityError> {
-        Ok(!self
-            .store
-            .credentials(&self.store.owner().await?)
-            .await?
-            .is_empty())
+        self.store.available().await
     }
     pub async fn start(
         &self,
         auth: Option<AuthenticatedSession>,
+        email: Option<&str>,
         now: u64,
     ) -> Result<crate::protocol_v2::PasskeyStart, IdentityError> {
-        let owner = self.store.owner().await?;
-        if auth
-            .as_ref()
-            .is_some_and(|auth| auth.session.owner != owner)
-        {
-            return Err(IdentityError::Denied);
-        }
+        let owner = match &auth {
+            Some(auth) if email.is_none() => auth.session.owner.clone(),
+            Some(_) => return Err(IdentityError::InvalidInput),
+            None => {
+                let binding = email.map(EmailAddress::parse).transpose()?.map(|email| {
+                    self.crypto
+                        .protect("owner_binding", &[email.as_str().as_bytes()])
+                });
+                self.store.owner(binding).await?
+            }
+        };
         if auth
             .as_ref()
             .is_some_and(|auth| !auth.session.recently_authenticated(now))

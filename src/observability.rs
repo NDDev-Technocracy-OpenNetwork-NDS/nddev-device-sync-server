@@ -1,16 +1,38 @@
 //! Signed owner/device gateway to the separately owned observability service.
 //! Operator credentials stay server-side; no arbitrary authenticated HTTP proxy.
-use crate::{
-    AppState, config::SecretString, identity, protocol_observability as dto, sync::http::ApiError,
-};
+use crate::{AppState, config::SecretString, identity, protocol_observability as dto};
 use axum::{
     Json, Router,
     body::Bytes,
     extract::{OriginalUri, Path, Query, State},
     http::{HeaderMap, StatusCode},
+    response::{IntoResponse, Response},
     routing::{get, post},
 };
 use nddev_device_sync_application::sync::SyncError;
+
+pub enum ApiError {
+    Transport(SyncError),
+    OperatorDenied,
+}
+impl From<SyncError> for ApiError {
+    fn from(error: SyncError) -> Self {
+        Self::Transport(error)
+    }
+}
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        match self {
+            Self::Transport(error) => crate::sync::http::ApiError::from(error).into_response(),
+            Self::OperatorDenied => (
+                StatusCode::FORBIDDEN,
+                Json(serde_json::json!({"error":"authorization_denied"})),
+            )
+                .into_response(),
+        }
+    }
+}
+
 use serde::Deserialize;
 use std::{
     fs::OpenOptions,
@@ -211,18 +233,21 @@ async fn authorize(
     method: &str,
     uri: &axum::http::Uri,
     body: &[u8],
+    operator: bool,
 ) -> Result<
     (
         nddev_device_sync_application::sync::AuthenticatedSession,
         nddev_device_sync_application::sync::SignedRequest,
     ),
-    SyncError,
+    ApiError,
 > {
-    gateway(state)?;
+    use nddev_device_sync_application::identity::{
+        Owner, TenantId, UserId, is_configured_operator,
+    };
     let now = identity::now_ms().map_err(|_| SyncError::Unavailable)?;
     let (auth, signed) =
         crate::sync::http::authorize(state, headers, method, uri, body, now).await?;
-    tokio::time::timeout(crate::database::DATABASE_TIMEOUT, async {
+    let allowed = tokio::time::timeout(crate::database::DATABASE_TIMEOUT, async {
         let identity = crate::identity::store::Store::new(
             state.database.clone().ok_or(SyncError::Unavailable)?,
         );
@@ -230,19 +255,49 @@ async fn authorize(
             .transaction()
             .await
             .map_err(|_| SyncError::Unavailable)?;
-        let outcome = crate::sync::store::authorize(
-            &mut tx,
-            &auth,
-            &signed,
-            now.max(crate::identity::now_ms().map_err(|_| SyncError::Unavailable)?),
-        )
+        let outcome = async {
+            let now = crate::sync::store::authorize(
+                &mut tx,
+                &auth,
+                &signed,
+                now.max(crate::identity::now_ms().map_err(|_| SyncError::Unavailable)?),
+            )
+            .await?;
+            if !operator {
+                return Ok(true);
+            }
+            let (user, tenant): (String, String) =
+                sqlx::query_as("SELECT user_id,tenant_id FROM nds_owner WHERE is_bootstrap")
+                    .fetch_one(&mut *tx)
+                    .await
+                    .map_err(|_| SyncError::Unavailable)?;
+            let configured = Owner {
+                user_id: UserId::new(user).map_err(|_| SyncError::Unavailable)?,
+                tenant_id: TenantId::new(tenant).map_err(|_| SyncError::Unavailable)?,
+            };
+            Ok(is_configured_operator(&auth, &configured, now))
+        }
         .await;
         crate::sync::store::finish(tx, outcome).await
     })
     .await
     .map_err(|_| SyncError::Unavailable)??;
+    if !allowed {
+        tracing::warn!(
+            module = "observability",
+            scope = "http",
+            event.name = "observability.operator.denied",
+            outcome = "denied",
+            user.id = auth.session.owner.user_id.as_str(),
+            tenant.id = auth.session.owner.tenant_id.as_str(),
+            device.id = signed.device.as_str()
+        );
+        return Err(ApiError::OperatorDenied);
+    }
+    gateway(state)?;
     Ok((auth, signed))
 }
+
 fn identifier(value: &str) -> bool {
     value.len() <= 128
         && value
@@ -254,6 +309,7 @@ pub fn routes() -> Router<AppState> {
         .route("/v2/observability/events", post(events))
         .route("/v2/observability/traces", post(traces))
         .route("/v2/observability/status", get(status))
+        .route("/v2/observability/client-policy", get(client_policy))
         .route("/v2/observability/incidents", get(incidents))
         .route(
             "/v2/observability/incidents/{id}/acknowledge",
@@ -276,7 +332,7 @@ async fn events(
     {
         return Err(SyncError::Invalid.into());
     }
-    let (auth, signed) = authorize(&state, &headers, "POST", &uri, &body).await?;
+    let (auth, signed) = authorize(&state, &headers, "POST", &uri, &body, false).await?;
     if !state.config.telemetry_enabled {
         return Ok(Json(disabled()));
     }
@@ -378,7 +434,7 @@ async fn traces(
     {
         return Err(SyncError::Invalid.into());
     }
-    let (auth, signed) = authorize(&state, &headers, "POST", &uri, &body).await?;
+    let (auth, signed) = authorize(&state, &headers, "POST", &uri, &body, false).await?;
     if !state.config.telemetry_enabled {
         return Ok(Json(disabled()));
     }
@@ -457,12 +513,29 @@ fn trace_receipt(response: &[u8], count: u32) -> Result<dto::IngressReceipt, Syn
         export_mode: dto::ExportMode::Enabled,
     })
 }
+async fn client_policy(
+    State(state): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+) -> Result<Json<dto::ClientTelemetryPolicy>, ApiError> {
+    let (_, signed) = authorize(&state, &headers, "GET", &uri, &[], false).await?;
+    let status: dto::ObservabilityStatus = gateway(&state)?
+        .forward("/v2/observability/status", None, signed.device.as_str())
+        .await?;
+    Ok(Json(dto::ClientTelemetryPolicy {
+        export_mode: if state.config.telemetry_enabled {
+            status.export_mode
+        } else {
+            dto::ExportMode::Disabled
+        },
+    }))
+}
 async fn status(
     State(state): State<AppState>,
     OriginalUri(uri): OriginalUri,
     headers: HeaderMap,
 ) -> Result<Json<dto::ObservabilityStatus>, ApiError> {
-    let (_, signed) = authorize(&state, &headers, "GET", &uri, &[]).await?;
+    let (_, signed) = authorize(&state, &headers, "GET", &uri, &[], true).await?;
     let mut status: dto::ObservabilityStatus = gateway(&state)?
         .forward("/v2/observability/status", None, signed.device.as_str())
         .await?;
@@ -486,7 +559,7 @@ async fn incidents(
     if !identifier(&page.after) {
         return Err(SyncError::Invalid.into());
     }
-    let (_, signed) = authorize(&state, &headers, "GET", &uri, &[]).await?;
+    let (_, signed) = authorize(&state, &headers, "GET", &uri, &[], true).await?;
     Ok(Json(
         gateway(&state)?
             .forward(
@@ -513,7 +586,7 @@ async fn action(
     } else {
         serde_json::from_slice::<dto::IncidentAction>(&body).map_err(|_| SyncError::Invalid)?;
     }
-    let (_, signed) = authorize(state, &headers, "POST", &uri, &body).await?;
+    let (_, signed) = authorize(state, &headers, "POST", &uri, &body, true).await?;
     Ok(Json(
         gateway(state)?
             .forward(

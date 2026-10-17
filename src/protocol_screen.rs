@@ -1,15 +1,58 @@
 // Generated; do not edit. AGPL-3.0-only. NDDev OpenNetwork — https://nddev.ai
 // Source: NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-protocol/contracts/v2/screen.schema.json
-// Schema SHA-256: f3699e6c9e1ffc763395435a4afea787efd0ac43fc016a3f65ab80f9491db7cb
-// Generator script SHA-256: 5d64ede7af40a61ff03e2757878764939c60e8ad3c9aebeebe14490c03a1501b
+// Schema SHA-256: 2b2c6cb6bca3fca75d529b0b665f8e7d1a15dee558cd142877e51dd593dd18ba
+// Generator script SHA-256: ae62f41c006f464727fbd660edaecacfc3713a3a84f4050ab600a89ec4a06a77
 // Tool: quicktype-core 26.0.0; dependency lock SHA-256: 643e0f2ba88602f4acb9546c401d4838e8e106a9180c0e6f3a760985081bfcf6
 // DTO generation is not schema, authorization or cryptographic validation.
-// Shared schema SHA-256: 3e9bf15d93a62b90732aae63a6a5f5180b21138459c5c7b43a2f455939436c12
+// Shared schema SHA-256: 22f8a01aa3ff70b3198dcceb72f42e4de2dcc2087fa2db2a9c3864f513e051a9
 
 use serde::{Deserialize, Serialize};
 
-/// Required null means the authenticated same-owner active target has no screen binding; it
-/// never creates an identity or authorizes capture.
+/// Fresh signed read for one active member of the authenticated company; ordinary users read
+/// themselves, current administrators may read another member. Echoes the selected user; at
+/// most32 active devices. No enrollment keys, revoked history, personal state or persistent
+/// secondary registry.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenTargetList {
+    pub targets: Vec<ScreenTarget>,
+
+    pub user_id: String,
+}
+
+/// Minimal active-device discovery projection for one authorized company member. Registered
+/// means a canonical endpoint binding exists, not that the device is online or consented to
+/// capture.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ScreenTarget {
+    pub device_id: String,
+
+    pub display_name: String,
+
+    pub platform: Platform,
+
+    pub registered: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Platform {
+    Android,
+
+    Ios,
+
+    Linux,
+
+    Macos,
+
+    Web,
+
+    Windows,
+}
+
+/// Required null means the authorized active target has no screen binding; it never creates
+/// an identity or authorizes capture.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScreenBindingResponse {
@@ -58,11 +101,11 @@ pub struct ScreenBindRequest {
     pub signature: String,
 }
 
-/// Signing device is viewer; target is an active same-owner host. Current exact distinct
-/// endpoint bindings and original viewer session are checked atomically. Requested
-/// lifetime<=300000ms; accepted expiry is explicitly returned at whole seconds. Exact
-/// original request bytes determine idempotent create replay; never renew/resurrect an old
-/// intent.
+/// Signing device is viewer; target is an active host allowed by current company screen
+/// policy. Current exact distinct endpoint bindings and original viewer session are checked
+/// atomically. Requested lifetime<=300000ms; accepted expiry is explicitly returned at whole
+/// seconds. Exact original request bytes determine idempotent create replay; never
+/// renew/resurrect an old intent.
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScreenViewRequest {

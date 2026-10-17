@@ -1,10 +1,10 @@
 // Generated; do not edit. AGPL-3.0-only. NDDev OpenNetwork — https://nddev.ai
 // Source: NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-protocol/contracts/v2/observability.schema.json
-// Schema SHA-256: c75f4778536ac505fcf322f4f77b05a9c9e5e4fd9a2f44fbef081161ccacd9ee
-// Generator script SHA-256: 5d64ede7af40a61ff03e2757878764939c60e8ad3c9aebeebe14490c03a1501b
+// Schema SHA-256: 3a463fe2faf5f511ef9de1d624c9b6355ca1dba1327ad0d169adec23e81a33ed
+// Generator script SHA-256: ae62f41c006f464727fbd660edaecacfc3713a3a84f4050ab600a89ec4a06a77
 // Tool: quicktype-core 26.0.0; dependency lock SHA-256: 643e0f2ba88602f4acb9546c401d4838e8e106a9180c0e6f3a760985081bfcf6
 // DTO generation is not schema, authorization or cryptographic validation.
-// Shared schema SHA-256: 3e9bf15d93a62b90732aae63a6a5f5180b21138459c5c7b43a2f455939436c12
+// Shared schema SHA-256: 22f8a01aa3ff70b3198dcceb72f42e4de2dcc2087fa2db2a9c3864f513e051a9
 
 use serde::{Deserialize, Serialize};
 
@@ -216,6 +216,14 @@ pub enum SourceState {
     Stale,
 
     Unsequenced,
+}
+
+/// Authenticated client export policy only; no global counters, sources or incidents.
+/// Company administration does not grant operator privileges.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct ClientTelemetryPolicy {
+    pub export_mode: ExportMode,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

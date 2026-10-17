@@ -74,7 +74,9 @@ async fn start(
     } else {
         None
     };
-    let result = service(&state)?.start(auth, now).await?;
+    let result = service(&state)?
+        .start(auth, input.email.as_deref(), now)
+        .await?;
     tracing::info!(
         module = "identity",
         scope = "http",

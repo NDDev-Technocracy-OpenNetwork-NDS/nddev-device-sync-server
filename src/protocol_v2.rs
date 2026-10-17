@@ -1,7 +1,7 @@
 // Generated; do not edit. AGPL-3.0-only. NDDev OpenNetwork — https://nddev.ai
 // Source: NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-protocol/contracts/v2/control-plane.schema.json
-// Schema SHA-256: 3e9bf15d93a62b90732aae63a6a5f5180b21138459c5c7b43a2f455939436c12
-// Generator script SHA-256: 5d64ede7af40a61ff03e2757878764939c60e8ad3c9aebeebe14490c03a1501b
+// Schema SHA-256: 22f8a01aa3ff70b3198dcceb72f42e4de2dcc2087fa2db2a9c3864f513e051a9
+// Generator script SHA-256: ae62f41c006f464727fbd660edaecacfc3713a3a84f4050ab600a89ec4a06a77
 // Tool: quicktype-core 26.0.0; dependency lock SHA-256: 643e0f2ba88602f4acb9546c401d4838e8e106a9180c0e6f3a760985081bfcf6
 // DTO generation is not schema, authorization or cryptographic validation.
 
@@ -29,6 +29,18 @@ pub enum MethodAvailability {
 #[serde(deny_unknown_fields)]
 pub struct EmailChallengeRequest {
     pub email: String,
+}
+
+/// Begin normal email verification for the intended recipient of a live invitation.
+/// Invitation possession alone never activates membership or creates a session.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InvitationEmailChallengeRequest {
+    pub email: String,
+
+    pub invitation_id: String,
+
+    pub invitation_token: String,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -191,6 +203,12 @@ pub struct PasskeyStart {
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct PasskeyRequest {
+    /// Login account selector, never authentication. Omit for registration, which uses the
+    /// authenticated session. Omission at login is accepted only when exactly one active account
+    /// exists.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub email: Option<String>,
+
     pub registration: bool,
 }
 
