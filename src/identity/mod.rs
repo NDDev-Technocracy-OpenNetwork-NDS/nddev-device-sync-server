@@ -1,15 +1,13 @@
 pub mod config;
 pub(crate) mod crypto;
-mod email;
+pub(crate) mod email;
 mod flows;
 mod github;
 pub mod http;
 pub(crate) mod store;
 
 use config::AuthConfig;
-use nddev_device_sync_application::identity::{
-    IdentityBinding, IdentityCrypto, IdentityError, IdentityService,
-};
+use nddev_device_sync_application::identity::{IdentityCrypto, IdentityError, IdentityService};
 use std::{
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
@@ -29,31 +27,35 @@ pub fn now_ms() -> Result<u64, IdentityError> {
 pub async fn initialize(
     pool: sqlx::PgPool,
     config: &AuthConfig,
-) -> Result<Arc<Service>, IdentityError> {
+    origin: Option<&reqwest::Url>,
+) -> Result<(Arc<Service>, email::Mailer), IdentityError> {
     let _ = rustls::crypto::ring::default_provider().install_default();
+    let companies = crate::organizations::store::Store::new(pool.clone());
     let store = store::Store::new(pool);
     let github_id = config.github.as_ref().map(|github| github.owner_id);
-    let owner = store
+    store
         .bootstrap(
+            &config.owner_email,
             config
                 .crypto
                 .protect("owner_binding", &[config.owner_email.as_str().as_bytes()]),
             github_id,
         )
         .await?;
-    let email = email::Mailer::new(config.smtp.as_ref(), store.clone()).await?;
+    let email = email::Mailer::new(
+        config.smtp.as_ref(),
+        store.clone(),
+        companies,
+        origin.cloned(),
+    )
+    .await?;
     let github = github::Github::new(config.github.as_ref()).await?;
     let service = IdentityService::new(
         store,
         config.crypto.clone(),
-        email,
+        email.clone(),
         github,
         flows::Flows::default(),
-        IdentityBinding {
-            owner,
-            email: config.owner_email.clone(),
-            github_id,
-        },
     );
     let methods = service.methods();
     tracing::info!(
@@ -64,5 +66,5 @@ pub async fn initialize(
         github_available = methods.1,
         outcome = "ready"
     );
-    Ok(Arc::new(service))
+    Ok((Arc::new(service), email))
 }

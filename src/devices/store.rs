@@ -59,9 +59,9 @@ async fn authorize(
     let owner = &authorization.session.owner;
     // Every session writer, revocation and observed-expiry deletion holds the
     // existing identity transaction lock. No session UPDATE grant is needed.
-    let expiry: Option<i64> = sqlx::query_scalar("SELECT expires_at_ms FROM nds_sessions WHERE token_digest=$1 AND user_id=$2 AND tenant_id=$3")
-        .bind(authorization.binding.0.as_slice()).bind(owner.user_id.as_str()).bind(owner.tenant_id.as_str())
-        .fetch_optional(&mut **tx).await.map_err(unavailable)?;
+    let expiry = identity_store::session_expiry(tx, owner, authorization.binding)
+        .await
+        .map_err(identity_error)?;
     match expiry {
         Some(expiry) if unsigned(expiry)? > now => Ok(()),
         Some(_) => {
@@ -146,8 +146,8 @@ impl DeviceStore for Store {
                 let count: i64 = sqlx::query_scalar("SELECT count(*) FROM nds_enrollment_challenges WHERE user_id=$1 AND tenant_id=$2")
                     .bind(owner.user_id.as_str()).bind(owner.tenant_id.as_str()).fetch_one(&mut *tx).await.map_err(unavailable)?;
                 if count >= MAX_PENDING_ENROLLMENTS as i64 { return Err(DeviceError::Capacity); }
-                let duplicate: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM nds_devices WHERE user_id=$1 AND tenant_id=$2 AND public_key=$3)")
-                    .bind(owner.user_id.as_str()).bind(owner.tenant_id.as_str()).bind(challenge.device.public_key.0.as_slice()).fetch_one(&mut *tx).await.map_err(unavailable)?;
+                let duplicate: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM nds_devices WHERE public_key=$1)")
+                    .bind(challenge.device.public_key.0.as_slice()).fetch_one(&mut *tx).await.map_err(unavailable)?;
                 if duplicate { return Err(DeviceError::InvalidInput); }
                 sqlx::query("INSERT INTO nds_enrollment_challenges(challenge_id,device_id,user_id,tenant_id,session_digest,platform,display_name,public_key,challenge,created_at_ms,expires_at_ms,attempts_remaining) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)")
                     .bind(&challenge.id).bind(challenge.device.id.as_str()).bind(owner.user_id.as_str()).bind(owner.tenant_id.as_str()).bind(challenge.session.0.as_slice())
@@ -184,8 +184,8 @@ impl DeviceStore for Store {
                     .bind(id).bind(i16::from(challenge.attempts_remaining)).bind(challenge.consumed).execute(&mut *tx).await.map_err(unavailable)?;
                 proof?;
                 let ordinal = capacity(&mut tx,owner).await?;
-                let duplicate: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM nds_devices WHERE user_id=$1 AND tenant_id=$2 AND public_key=$3)")
-                    .bind(owner.user_id.as_str()).bind(owner.tenant_id.as_str()).bind(challenge.device.public_key.0.as_slice()).fetch_one(&mut *tx).await.map_err(unavailable)?;
+                let duplicate: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM nds_devices WHERE public_key=$1)")
+                    .bind(challenge.device.public_key.0.as_slice()).fetch_one(&mut *tx).await.map_err(unavailable)?;
                 if duplicate { return Err(DeviceError::InvalidInput); }
                 let mut device = challenge.device;
                 device.created_at_ms = now;

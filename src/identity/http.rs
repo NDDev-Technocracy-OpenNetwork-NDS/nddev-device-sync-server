@@ -12,7 +12,8 @@ use axum::{
 };
 use nddev_device_sync_application::identity::{
     AuthMethod, BrowserApproval, GITHUB_LIFETIME_MS, GITHUB_POLL_MS, GithubCallback,
-    GithubExchange, IdentityError, IssuedSession, Locale, Session,
+    GithubExchange, IdentityError, InvitationClaim, InvitationId, IssuedSession, Locale,
+    SecretText, Session,
 };
 use serde::Deserialize;
 
@@ -20,6 +21,10 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/v2/auth/methods", get(methods))
         .route("/v2/auth/email/challenges", post(email_challenge))
+        .route(
+            "/v2/auth/invitations/challenges",
+            post(invitation_challenge),
+        )
         .route("/v2/auth/email/verify", post(email_verify))
         .route("/v2/auth/github/start", post(github_start))
         .route("/v2/auth/github/callback", get(github_callback))
@@ -91,7 +96,7 @@ pub(crate) fn peer(peer: Option<Extension<PeerAddress>>) -> Result<Vec<u8>, Iden
             .unwrap_or_else(|| ip.octets().to_vec())),
     }
 }
-fn locale(headers: &HeaderMap) -> Locale {
+pub(crate) fn locale(headers: &HeaderMap) -> Locale {
     for language in headers
         .get("accept-language")
         .and_then(|v| v.to_str().ok())
@@ -200,12 +205,45 @@ async fn email_challenge(
     body: Result<Json<dto::EmailChallengeRequest>, JsonRejection>,
 ) -> Result<impl IntoResponse, ApiError> {
     let Json(body) = body.map_err(|_| IdentityError::InvalidInput)?;
-    if body.email.len() > 254 || body.email.trim() != body.email {
+    request_email_challenge(&state, source, &headers, &body.email, None).await
+}
+async fn invitation_challenge(
+    State(state): State<AppState>,
+    source: Option<Extension<PeerAddress>>,
+    headers: HeaderMap,
+    body: Result<Json<dto::InvitationEmailChallengeRequest>, JsonRejection>,
+) -> Result<impl IntoResponse, ApiError> {
+    let Json(body) = body.map_err(|_| IdentityError::InvalidInput)?;
+    let claim = InvitationClaim {
+        id: InvitationId::new(body.invitation_id).map_err(|_| IdentityError::InvalidInput)?,
+        token: SecretText::new(body.invitation_token),
+    };
+    request_email_challenge(&state, source, &headers, &body.email, Some(claim)).await
+}
+async fn request_email_challenge(
+    state: &AppState,
+    source: Option<Extension<PeerAddress>>,
+    headers: &HeaderMap,
+    email: &str,
+    invitation: Option<InvitationClaim>,
+) -> Result<(StatusCode, Json<dto::EmailChallenge>), ApiError> {
+    if email.len() > 254 || email.trim() != email {
         return Err(IdentityError::InvalidInput.into());
     }
-    let receipt = service(&state)?
-        .request_email(&body.email, &peer(source)?, locale(&headers), now_ms()?)
-        .await?;
+    let peer = peer(source)?;
+    let service = service(state)?;
+    let receipt = match invitation {
+        Some(claim) => {
+            service
+                .request_invitation_email(email, claim, &peer, locale(headers), now_ms()?)
+                .await?
+        }
+        None => {
+            service
+                .request_email(email, &peer, locale(headers), now_ms()?)
+                .await?
+        }
+    };
     tracing::info!(
         module = "identity",
         scope = "http",

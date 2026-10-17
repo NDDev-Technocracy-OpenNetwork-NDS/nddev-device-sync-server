@@ -10,7 +10,8 @@ use axum::{
 use base64::{Engine, engine::general_purpose::URL_SAFE_NO_PAD};
 use nddev_device_sync_application::{screen::*, sync::SyncError};
 use nddev_device_sync_domain::{
-    DeviceId,
+    DeviceId, UserId,
+    devices::DevicePlatform,
     modules::ModuleError,
     screen::{
         EndpointBinding, MAX_NATIVE_GRANT_BYTES, ScreenError, ViewLease, ViewPermit,
@@ -21,6 +22,7 @@ use nddev_device_sync_domain::{
 
 pub fn routes() -> Router<AppState> {
     Router::new()
+        .route("/v2/rds/targets/{user_id}", get(targets))
         .route("/v2/rds/bindings", post(bind))
         .route("/v2/rds/bindings/{device_id}", get(binding))
         .route("/v2/rds/views", post(create))
@@ -181,6 +183,55 @@ fn bound(v: EndpointBinding) -> Result<dto::ScreenBinding, ScreenError> {
         instance_id: uuid::Uuid::from_bytes(v.instance_id).to_string(),
         revision: int(v.revision)?,
     })
+}
+
+async fn targets(
+    State(state): State<AppState>,
+    OriginalUri(uri): OriginalUri,
+    Path(user): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Json<dto::ScreenTargetList>, ApiError> {
+    empty(&body)?;
+    if uri.query().is_some() {
+        return Err(invalid(()).into());
+    }
+    let user = UserId::new(user).map_err(invalid)?;
+    let now = crate::identity::now_ms().map_err(|_| SyncError::Unavailable)?;
+    let (auth, signed) =
+        crate::sync::http::authorize(&state, &headers, "GET", &uri, &body, now).await?;
+    let device = signed.device.clone();
+    let rows = service(&state)?.targets(&auth, signed, &user, now).await?;
+    let targets = rows
+        .into_iter()
+        .map(|row| dto::ScreenTarget {
+            device_id: row.device.into(),
+            display_name: row.name.as_str().into(),
+            registered: row.registered,
+            platform: match row.platform {
+                DevicePlatform::Android => dto::Platform::Android,
+                DevicePlatform::Ios => dto::Platform::Ios,
+                DevicePlatform::Linux => dto::Platform::Linux,
+                DevicePlatform::Macos => dto::Platform::Macos,
+                DevicePlatform::Web => dto::Platform::Web,
+                DevicePlatform::Windows => dto::Platform::Windows,
+            },
+        })
+        .collect();
+    tracing::info!(
+        event.name = "rds.targets.completed",
+        module = "rds",
+        scope = "http",
+        outcome = "ok",
+        user.id = auth.session.owner.user_id.as_str(),
+        tenant.id = auth.session.owner.tenant_id.as_str(),
+        device.id = device.as_str(),
+        target.user.id = user.as_str()
+    );
+    Ok(Json(dto::ScreenTargetList {
+        user_id: user.as_str().into(),
+        targets,
+    }))
 }
 
 async fn bind(
