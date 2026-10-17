@@ -27,10 +27,14 @@ def snapshot(sql, original=None):
     result = {}
     for table in TABLES:
         source = table if original is None else table.replace("nds_sync_", "nds_replica_")
-        columns = "*" if original is None else ",".join(json.loads(original[table])[0])
+        columns = "*" if original is None else ",".join(
+            name for name in json.loads(original[table])[0] if name != "singleton")
         text = sql(f"SELECT row_to_json(t)::text FROM (SELECT {columns} FROM {source}) t").stdout.strip()
         rows = [json.loads(line) for line in text.splitlines()]
         assert len(rows) == 1, f"upgrade witness row count changed: {table}"
+        # Schema12 deliberately removes only the obsolete singleton constraint;
+        # every identity, device, ciphertext and receipt column remains exact.
+        rows[0].pop("singleton", None)
         result[table] = canonical(rows)
     return result
 
@@ -102,6 +106,8 @@ COMMIT;""")
 def verify(sql, witness):
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     current = snapshot(sql, witness["rows"])
+    assert sql("SELECT is_bootstrap AND company_role='admin' AND membership_active AND member_revision=1 FROM nds_owner").stdout.strip() == "t"
+    assert sql("SELECT count(*) FROM nds_companies").stdout.strip() == "1"
     assert sql("SELECT admission_version=2 AND floor_seq=0 AND base_seq=0 FROM public.nds_replica_counters").stdout.strip() == "t"
     assert sql("SELECT applied_seq=1 FROM public.nds_replica_entities").stdout.strip() == "t"
     assert sql("SELECT wire_version=2 AND base_revision=0 AND applied_revision=1 AND request_bytes=octet_length(request_body) AND result_bytes=octet_length(result_body) FROM public.nds_replica_operations").stdout.strip() == "t"
@@ -157,4 +163,5 @@ def clean(sql, witness):
     for old in order:
         table = old.replace("nds_sync_", "nds_replica_")
         sql(f"DELETE FROM {table} WHERE user_id='{user}' AND tenant_id='{tenant}'")
+    sql(f"DELETE FROM nds_companies WHERE tenant_id='{tenant}'")
     assert all(sql(f"SELECT count(*) FROM {table.replace('nds_sync_', 'nds_replica_')}").stdout.strip() == "0" for table in TABLES)

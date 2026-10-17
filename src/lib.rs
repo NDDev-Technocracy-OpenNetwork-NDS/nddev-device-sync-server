@@ -6,7 +6,9 @@ pub mod devices;
 pub mod identity;
 pub mod logging;
 pub mod observability;
+mod organizations;
 pub mod passkeys;
+pub mod protocol_company;
 pub mod protocol_devices;
 pub mod protocol_observability;
 pub mod protocol_screen;
@@ -67,6 +69,7 @@ pub struct AppState {
     pub screen: Option<Arc<screen::store::Store>>,
     pub vault: Option<Arc<vault::Service>>,
     pub passkeys: Option<Arc<passkeys::Service>>,
+    pub organizations: Option<Arc<organizations::Service>>,
     requests: Arc<Semaphore>,
     pressure: Arc<admission::Pressure>,
 }
@@ -78,16 +81,24 @@ impl AppState {
         } else {
             None
         };
-        let identity = match &config.identity {
-            Some(identity) => Some(
-                identity::initialize(
+        let (identity, mailer) = match &config.identity {
+            Some(settings) => {
+                let (identity, mailer) = identity::initialize(
                     database.clone().ok_or(database::DatabaseError::Identity)?,
-                    identity,
+                    settings,
+                    config.public_origin.as_ref(),
                 )
                 .await
-                .map_err(|_| database::DatabaseError::Identity)?,
-            ),
-            None => None,
+                .map_err(|_| database::DatabaseError::Identity)?;
+                (Some(identity), Some(mailer))
+            }
+            None => (None, None),
+        };
+        let organizations = match (&database, &config.identity, &config.public_origin, mailer) {
+            (Some(pool), Some(settings), Some(_), Some(mailer)) => Some(Arc::new(
+                organizations::Service::new(pool.clone(), settings.crypto.clone(), mailer),
+            )),
+            _ => None,
         };
         let devices = config.identity.as_ref().and_then(|identity| {
             database
@@ -135,6 +146,7 @@ impl AppState {
             screen,
             vault,
             passkeys,
+            organizations,
             requests: Arc::new(Semaphore::new(config.max_requests)),
             pressure: Arc::default(),
             config,
@@ -169,6 +181,7 @@ impl AppState {
             screen: None,
             vault: None,
             passkeys: None,
+            organizations: None,
             requests: Arc::new(Semaphore::new(64)),
             pressure: Arc::default(),
         }
@@ -212,6 +225,7 @@ pub fn router(state: AppState) -> Router {
         .merge(screen::routes())
         .merge(vault::routes())
         .merge(passkeys::http::routes())
+        .merge(organizations::http::routes())
         .merge(observability::routes());
     let routes = if state.config.web_assets.is_some() {
         routes

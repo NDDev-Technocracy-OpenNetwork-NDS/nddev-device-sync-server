@@ -25,9 +25,15 @@ use tokio::sync::mpsc;
 use tracing::Instrument;
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 
+mod invitation;
+
 const QUEUE_CAPACITY: usize = 16;
+enum Content {
+    Code(EmailMessage),
+    Invitation(nddev_device_sync_application::organizations::InvitationMessage),
+}
 struct Job {
-    message: EmailMessage,
+    message: Content,
     // IDs/flags only: never retain the live HTTP span while a message is queued.
     parent: SpanContext,
 }
@@ -37,6 +43,7 @@ struct Inner {
     last_probe: Arc<AtomicU64>,
     busy: Arc<AtomicBool>,
     worker: tokio::task::JoinHandle<()>,
+    invitations_available: bool,
 }
 impl Drop for Inner {
     fn drop(&mut self) {
@@ -63,7 +70,12 @@ async fn probe(transport: &AsyncSmtpTransport<Tokio1Executor>) -> bool {
 }
 
 impl Mailer {
-    pub async fn new(config: Option<&SmtpConfig>, store: Store) -> Result<Self, IdentityError> {
+    pub async fn new(
+        config: Option<&SmtpConfig>,
+        store: Store,
+        companies: crate::organizations::store::Store,
+        origin: Option<reqwest::Url>,
+    ) -> Result<Self, IdentityError> {
         let Some(config) = config else {
             return Ok(Self::default());
         };
@@ -107,6 +119,7 @@ impl Mailer {
         let busy = Arc::new(AtomicBool::new(false));
         let worker_busy = busy.clone();
         let (sender, mut receiver) = mpsc::channel::<Job>(QUEUE_CAPACITY);
+        let invitations_available = origin.is_some();
         let worker = tokio::spawn(async move {
             let refresh = tokio::time::sleep(Duration::from_secs(60));
             tokio::pin!(refresh);
@@ -130,7 +143,15 @@ impl Mailer {
                         worker_busy.store(true,Ordering::Relaxed);
                         let span = delivery_span(job.parent);
                         async {
-                            let message=job.message;
+                            let message=match job.message {
+                                Content::Code(message)=>message,
+                                Content::Invitation(message)=>{
+                                    let result=invitation::deliver(&transport,&from,&companies,origin.as_ref(),message).await;
+                                    if result.is_ok() { worker_ready.store(true,Ordering::Relaxed);worker_time.store(super::now_ms().unwrap_or(0),Ordering::Relaxed); }
+                                    else if result==Err(IdentityError::Unavailable) { worker_ready.store(false,Ordering::Relaxed); }
+                                    return;
+                                }
+                            };
                             let delivery=async {
                                 if super::now_ms()? >= message.expires_at_ms { return Err(IdentityError::Denied); }
                                 let recipient=message.recipient.as_str().parse().map_err(|_|IdentityError::InvalidInput)?;
@@ -163,6 +184,7 @@ impl Mailer {
             last_probe,
             busy,
             worker,
+            invitations_available,
         }))))
     }
 }
@@ -176,6 +198,11 @@ impl EmailDelivery for Mailer {
         })
     }
     fn queue(&self, message: EmailMessage) -> Result<(), IdentityError> {
+        self.enqueue(Content::Code(message))
+    }
+}
+impl Mailer {
+    fn enqueue(&self, message: Content) -> Result<(), IdentityError> {
         let inner = self.0.as_ref().ok_or(IdentityError::Unavailable)?;
         inner
             .sender
@@ -194,6 +221,27 @@ impl EmailDelivery for Mailer {
                     outcome = "rejected"
                 );
                 IdentityError::Capacity
+            })
+    }
+}
+impl nddev_device_sync_application::organizations::InvitationDelivery for Mailer {
+    fn available(&self) -> bool {
+        EmailDelivery::available(self)
+            && self
+                .0
+                .as_ref()
+                .is_some_and(|inner| inner.invitations_available)
+    }
+    fn queue(
+        &self,
+        message: nddev_device_sync_application::organizations::InvitationMessage,
+    ) -> Result<(), nddev_device_sync_domain::organizations::OrganizationError> {
+        self.enqueue(Content::Invitation(message))
+            .map_err(|error| match error {
+                IdentityError::Capacity => {
+                    nddev_device_sync_domain::organizations::OrganizationError::Busy
+                }
+                _ => nddev_device_sync_domain::organizations::OrganizationError::Unavailable,
             })
     }
 }

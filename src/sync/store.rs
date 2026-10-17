@@ -36,8 +36,12 @@ pub(crate) async fn authorize(
     now: u64,
 ) -> Result<u64, SyncError> {
     let owner = &auth.session.owner;
-    let session:Option<i64>=sqlx::query_scalar("SELECT expires_at_ms FROM nds_sessions WHERE token_digest=$1 AND user_id=$2 AND tenant_id=$3")
-        .bind(auth.binding.0.as_slice()).bind(owner.user_id.as_str()).bind(owner.tenant_id.as_str()).fetch_optional(&mut **tx).await.map_err(unavailable)?;
+    let session = crate::identity::store::session_expiry(tx, owner, auth.binding)
+        .await
+        .map_err(|error| match error {
+            nddev_device_sync_application::identity::IdentityError::Denied => SyncError::Denied,
+            _ => SyncError::Unavailable,
+        })?;
     if !session.is_some_and(|expires| expires > now as i64) {
         return Err(SyncError::Denied);
     }

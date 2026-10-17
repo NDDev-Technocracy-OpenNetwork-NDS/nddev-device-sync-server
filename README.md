@@ -12,7 +12,8 @@ The current server provides:
 - PostgreSQL readiness and an explicit migration command with a separate identity;
 - direct Rust/rustls HTTPS, bounded connection drain and safe certificate reload;
 - finite connection/handler admission and scoped, expiring debug diagnostics;
-- email OTP, GitHub PKCE and browser WebAuthn passkeys for one explicitly configured owner;
+- email OTP, explicitly bound GitHub identities and browser WebAuthn passkeys;
+- signed company invitations, revision-checked membership and last-administrator protection;
 - bounded passkey metadata and fresh-session credential/session revocation;
 - browser pairing approval, expiring/revocable sessions and bounded abuse controls;
 - session-bound Ed25519 device enrollment, paged owner inventory and revocation;
@@ -27,6 +28,15 @@ The current server provides:
 The legacy `module_count` health field is zero: the server composes no local-tool
 adapters. The native agent discovers those adapters; core owns their observation
 rules and the shared replica policy.
+
+Company identity storage preserves existing user/device/Vault bindings. Personal
+data remains owner-only, including for administrators. The administrative API and
+SMTP invitation/OTP path are implemented. RDS control metadata permits current
+same-company administrators to request another member's device while retaining
+participant-only grants and current-session/membership revalidation. Device
+discovery and end-to-end screen capture remain separate client acceptance. Global monitoring
+controls remain bound to the configured deployment operator, independently of
+company roles; ordinary clients use the narrow export-policy endpoint.
 
 Sync reads honor the requested limit up to 100 operations and stop before the
 encoded JSON page exceeds the core's 60 KiB budget. A truncated page advances

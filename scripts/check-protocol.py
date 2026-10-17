@@ -5,7 +5,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 from protocol_source import ROOT, source
-FILES = ["package.json", "package-lock.json", "scripts/generate-dtos.mjs", "contracts/v2/control-plane.schema.json", "contracts/v2/observability.schema.json", "contracts/v2/screen.schema.json", "contracts/v3/sync.schema.json"]
+FILES = ["package.json", "package-lock.json", "scripts/generate-dtos.mjs", "contracts/v2/control-plane.schema.json", "contracts/v2/observability.schema.json", "contracts/v2/screen.schema.json", "contracts/v2/company.schema.json", "contracts/v3/sync.schema.json"]
 arguments = argparse.ArgumentParser(description=__doc__)
 arguments.add_argument("--write", action="store_true", help="Write the consumer DTOs from the exact manifest pin instead of checking drift")
 options = arguments.parse_args()
@@ -18,7 +18,7 @@ with tempfile.TemporaryDirectory(prefix="nds-protocol-check-") as directory:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(source(name))
     subprocess.run(["npm", "ci", "--ignore-scripts", "--no-audit", "--no-fund"], cwd=directory, check=True, timeout=120, stdout=subprocess.DEVNULL)
-    for profile, target in [("auth", "protocol_v2.rs"), ("devices", "protocol_devices.rs"), ("sync", "protocol_sync.rs"), ("sync3", "protocol_sync3.rs"), ("vault", "protocol_vault.rs"), ("observability", "protocol_observability.rs"), ("screen", "protocol_screen.rs")]:
+    for profile, target in [("auth", "protocol_v2.rs"), ("devices", "protocol_devices.rs"), ("sync", "protocol_sync.rs"), ("sync3", "protocol_sync3.rs"), ("vault", "protocol_vault.rs"), ("observability", "protocol_observability.rs"), ("screen", "protocol_screen.rs"), ("company", "protocol_company.rs")]:
         output = directory / target
         subprocess.run(["node", "scripts/generate-dtos.mjs", "rust", profile, str(output)], cwd=directory, check=True, timeout=30)
         subprocess.run(["rustfmt", "--edition", "2024", str(output)], cwd=ROOT, check=True, timeout=20)

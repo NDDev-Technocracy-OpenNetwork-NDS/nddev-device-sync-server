@@ -24,6 +24,7 @@ arguments.add_argument("--fixture-tls", action="store_true", help="Owned ephemer
 arguments.add_argument("--fixture-passkeys", action="store_true", help="Use the localhost secure browser origin for owned passkey acceptance")
 arguments.add_argument("--fixture-sync3", action="store_true", help="Explicitly admit current writes for the fresh, empty fixture owner")
 arguments.add_argument("--upgrade-from", type=Path, help="Existing immutable schema9 server binary outside this repository, for real upgrade acceptance")
+arguments.add_argument("--upgrade-company", action="store_true", help="Also qualify production company migration SQL with encrypted witnesses in a separate owned database (cryptography50.0.2 required)")
 arguments.add_argument("--fixture-web-root", type=Path, help="Owned manifest-verified browser test bundle, served by the real server")
 options = arguments.parse_args()
 if options.upgrade_from is not None:
@@ -55,8 +56,8 @@ def command(*args, **kwargs):
     return subprocess.run(args, check=True, capture_output=True, text=True, **kwargs).stdout.strip()
 
 
-def sql(statement, role="postgres", check=True):
-    return subprocess.run(["docker", "exec", "-i", name, "psql", "-XAt", "-v", "ON_ERROR_STOP=1", "-U", role, "-d", "nds", "-f", "-"], input=statement, check=check, capture_output=True, text=True, timeout=10)
+def sql(statement, role="postgres", check=True, database="nds"):
+    return subprocess.run(["docker", "exec", "-i", name, "psql", "-XAt", "-v", "ON_ERROR_STOP=1", "-U", role, "-d", database, "-f", "-"], input=statement, check=check, capture_output=True, text=True, timeout=10)
 
 
 LOCAL_HTTP = urllib.request.build_opener(urllib.request.ProxyHandler({}))
@@ -108,6 +109,14 @@ try:
             time.sleep(0.1)
         else:
             raise AssertionError("disposable PostgreSQL did not initialize")
+        if options.upgrade_company:
+            from company_migration_acceptance import check_company_upgrade
+            sql("CREATE DATABASE nds_company_upgrade OWNER nds_migrator")
+            try:
+                check_company_upgrade(lambda statement, role="postgres", check=True:
+                                      sql(statement, role, check, "nds_company_upgrade"))
+            finally:
+                sql("DROP DATABASE nds_company_upgrade")
         urls = {}
         for kind, password in passwords.items():
             role = "postgres" if kind == "admin" else "nds_" + kind
@@ -167,8 +176,8 @@ try:
             logs += command(str(BINARY), "migrate", env=migration_env) + "\n"
             if upgrade_witness is not None:
                 verify(sql, upgrade_witness)
-        assert sql("SELECT count(*) FROM _sqlx_migrations WHERE success").stdout.strip() == "11"
-        assert sql("SELECT value FROM nddev_schema_meta WHERE key='schema_version'").stdout.strip() == "11"
+        assert sql("SELECT count(*) FROM _sqlx_migrations WHERE success").stdout.strip() == "13"
+        assert sql("SELECT value FROM nddev_schema_meta WHERE key='schema_version'").stdout.strip() == "13"
         assert sql("SELECT to_regclass('public.nds_sync_operations') IS NULL").stdout.strip() == "t"
         assert sql("UPDATE public.nds_replica_counters SET admission_version=3 WHERE false", "nds_runtime", check=False).returncode != 0
         if options.upgrade_from is not None:
@@ -180,7 +189,7 @@ try:
             assert server.returncode == 0
             server = None
             clean(sql, upgrade_witness)
-            print("Schema9-to11 upgrade passed: seven canonical identity/device/vault/sync rows preserve original columns and decrypt after migration and repeat; new runtime rejects schema9 and old runtime rejects schema11 readiness; old migration history retained.")
+            print("Schema9-to13 upgrade passed: seven canonical identity/device/vault/sync rows preserve original columns and decrypt after migration and repeat; new runtime rejects schema9 and old runtime rejects schema13 readiness; old migration history retained.")
         assert sql("CREATE TABLE prohibited(id INT)", "nds_runtime", check=False).returncode != 0
         assert sql("UPDATE _sqlx_migrations SET success=false WHERE false", "nds_runtime", check=False).returncode != 0
         assert sql("UPDATE nds_sessions SET expires_at_ms=expires_at_ms WHERE false", "nds_runtime", check=False).returncode != 0

@@ -1698,7 +1698,7 @@ dependencies = [
 [[package]]
 name = "nddev-device-sync-application"
 version = "0.0.1-alpha.21"
-source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git?rev=22af3c529a57edaa8fdf797252b719baeed48733#22af3c529a57edaa8fdf797252b719baeed48733"
+source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git?rev=0135c86b2887c7cea96c0f1082d70560bde00cc6#0135c86b2887c7cea96c0f1082d70560bde00cc6"
 dependencies = [
  "nddev-device-sync-domain",
 ]
@@ -1706,7 +1706,7 @@ dependencies = [
 [[package]]
 name = "nddev-device-sync-domain"
 version = "0.0.12"
-source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git?rev=22af3c529a57edaa8fdf797252b719baeed48733#22af3c529a57edaa8fdf797252b719baeed48733"
+source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git?rev=0135c86b2887c7cea96c0f1082d70560bde00cc6#0135c86b2887c7cea96c0f1082d70560bde00cc6"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
@@ -1768,7 +1768,7 @@ dependencies = [
 [[package]]
 name = "nddev-device-sync-telemetry"
 version = "0.0.1-alpha.11"
-source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-observability.git?rev=40f1f799a395f67e7a565e9c0c9f4b5ba7fdbe67#40f1f799a395f67e7a565e9c0c9f4b5ba7fdbe67"
+source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-observability.git?rev=6cf8b2ee69fd6a64bd218b47db55378191f66907#6cf8b2ee69fd6a64bd218b47db55378191f66907"
 dependencies = [
  "android_log-sys",
  "chrono",

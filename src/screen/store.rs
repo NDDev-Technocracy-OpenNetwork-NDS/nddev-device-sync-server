@@ -4,10 +4,11 @@ use nddev_device_sync_application::{
     sync::{AuthenticatedSession, SignedRequest, SyncError},
 };
 use nddev_device_sync_domain::{
-    DeviceId,
-    devices::{Device, DeviceStatus},
-    identity::ProtectedDigest,
+    DeviceId, UserId,
+    devices::{Device, DeviceStatus, MAX_ACTIVE_DEVICES},
+    identity::{IdentityError, Owner, ProtectedDigest},
     modules::ModuleError,
+    organizations::Membership,
     screen::{EndpointBinding, ScreenError, ViewIntent, ViewProjection, ViewState},
 };
 use sqlx::{Postgres, Row, Transaction, postgres::PgRow};
@@ -78,34 +79,35 @@ async fn authorize(
         .map_err(sync_error)?;
     let owner = &auth.session.owner;
     sqlx::query(
-        "DELETE FROM nds_screen_views WHERE user_id=$1 AND tenant_id=$2 AND expires_at_ms <= $3",
+        "DELETE FROM nds_screen_views WHERE tenant_id=$2 AND (user_id=$1 OR host_device=$4) AND expires_at_ms <= $3",
     )
     .bind(owner.user_id.as_str())
     .bind(owner.tenant_id.as_str())
     .bind(integer(floor)?)
+    .bind(signed.device.as_str())
     .execute(&mut **tx)
     .await
     .map_err(unavailable)?;
     // Existing canonical facts retire permission, but keep early-ended receipts
     // through their original expiry. No receipt history or authority renewal.
-    sqlx::query("UPDATE nds_screen_views v SET state='ended',native_grant=NULL WHERE v.user_id=$1 AND v.tenant_id=$2 AND v.state<>'ended' AND (NOT EXISTS(SELECT 1 FROM nds_sessions s WHERE s.token_digest=v.viewer_session AND s.user_id=v.user_id AND s.tenant_id=v.tenant_id AND s.expires_at_ms>$3) OR EXISTS(SELECT 1 FROM nds_devices d WHERE d.device_id IN(v.viewer_device,v.host_device) AND d.status<>'active'))").bind(owner.user_id.as_str()).bind(owner.tenant_id.as_str()).bind(integer(floor)?).execute(&mut **tx).await.map_err(unavailable)?;
+    sqlx::query("UPDATE nds_screen_views v SET state='ended',native_grant=NULL WHERE v.tenant_id=$2 AND (v.user_id=$1 OR v.host_device=$4) AND v.state<>'ended' AND (NOT EXISTS(SELECT 1 FROM nds_sessions s WHERE s.token_digest=v.viewer_session AND s.user_id=v.user_id AND s.tenant_id=v.tenant_id AND s.expires_at_ms>$3) OR EXISTS(SELECT 1 FROM nds_devices d WHERE d.device_id IN(v.viewer_device,v.host_device) AND d.status<>'active'))").bind(owner.user_id.as_str()).bind(owner.tenant_id.as_str()).bind(integer(floor)?).bind(signed.device.as_str()).execute(&mut **tx).await.map_err(unavailable)?;
     Ok(floor)
 }
+// Internal company-scoped facts. Callers must apply Core screen policy or
+// participant authorization before exposing any result. Personal inventory stays unchanged.
 async fn device(
     tx: &mut Tx<'_>,
     auth: &AuthenticatedSession,
     id: &DeviceId,
 ) -> Result<Device, ScreenError> {
     let owner = &auth.session.owner;
-    let row =
-        sqlx::query("SELECT * FROM nds_devices WHERE device_id=$1 AND user_id=$2 AND tenant_id=$3")
-            .bind(id.as_str())
-            .bind(owner.user_id.as_str())
-            .bind(owner.tenant_id.as_str())
-            .fetch_optional(&mut **tx)
-            .await
-            .map_err(unavailable)?
-            .ok_or(ScreenError::Denied)?;
+    let row = sqlx::query("SELECT * FROM nds_devices WHERE device_id=$1 AND tenant_id=$2")
+        .bind(id.as_str())
+        .bind(owner.tenant_id.as_str())
+        .fetch_optional(&mut **tx)
+        .await
+        .map_err(unavailable)?
+        .ok_or(ScreenError::Denied)?;
     let value = crate::devices::store::device(&row).map_err(unavailable)?;
     if value.status != DeviceStatus::Active {
         return Err(ScreenError::Denied);
@@ -128,18 +130,24 @@ fn binding_row(row: PgRow) -> Result<EndpointBinding, ScreenError> {
         revision: unsigned(row.try_get("revision").map_err(unavailable)?)?,
     })
 }
-async fn binding(
-    tx: &mut Tx<'_>,
-    auth: &AuthenticatedSession,
-    id: &DeviceId,
-) -> Result<Option<EndpointBinding>, ScreenError> {
-    let owner = &auth.session.owner;
+fn identity_error(error: IdentityError) -> ScreenError {
+    match error {
+        IdentityError::Unavailable => unavailable(error),
+        _ => ScreenError::Denied,
+    }
+}
+async fn membership(tx: &mut Tx<'_>, owner: &Owner) -> Result<Membership, ScreenError> {
+    crate::identity::store::membership(tx, owner)
+        .await
+        .map_err(identity_error)
+}
+async fn binding(tx: &mut Tx<'_>, device: &Device) -> Result<Option<EndpointBinding>, ScreenError> {
     sqlx::query(
         "SELECT * FROM nds_screen_bindings WHERE device_id=$1 AND user_id=$2 AND tenant_id=$3",
     )
-    .bind(id.as_str())
-    .bind(owner.user_id.as_str())
-    .bind(owner.tenant_id.as_str())
+    .bind(device.id.as_str())
+    .bind(device.owner.user_id.as_str())
+    .bind(device.owner.tenant_id.as_str())
     .fetch_optional(&mut **tx)
     .await
     .map_err(unavailable)?
@@ -172,14 +180,17 @@ fn intent(row: &PgRow) -> Result<ViewIntent, ScreenError> {
 async fn load(
     tx: &mut Tx<'_>,
     auth: &AuthenticatedSession,
+    signed: &SignedRequest,
     id: &str,
 ) -> Result<PgRow, ScreenError> {
     let id = uuid::Uuid::parse_str(id).map_err(|_| ScreenError::Denied)?;
     let owner = &auth.session.owner;
-    sqlx::query("SELECT * FROM nds_screen_views WHERE view_id=$1 AND user_id=$2 AND tenant_id=$3")
+    // A company administrator cannot take over another viewer's existing intent.
+    // authorize() already proved this signed device belongs to the current actor.
+    sqlx::query("SELECT * FROM nds_screen_views WHERE view_id=$1 AND tenant_id=$2 AND (viewer_device=$3 OR host_device=$3)")
         .bind(id)
-        .bind(owner.user_id.as_str())
         .bind(owner.tenant_id.as_str())
+        .bind(signed.device.as_str())
         .fetch_optional(&mut **tx)
         .await
         .map_err(unavailable)?
@@ -193,26 +204,29 @@ async fn revalidate(
     actor: ViewActor,
     now: u64,
 ) -> Result<(), ScreenError> {
-    let owner = &auth.session.owner;
-    let alive: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM nds_sessions WHERE token_digest=$1 AND user_id=$2 AND tenant_id=$3 AND expires_at_ms>$4)").bind(value.viewer_session().0.as_slice()).bind(owner.user_id.as_str()).bind(owner.tenant_id.as_str()).bind(integer(now)?).fetch_one(&mut **tx).await.map_err(unavailable)?;
-    if !alive {
-        return Err(ScreenError::Denied);
-    }
     let permit = value.permit();
     let viewer = device(tx, auth, &permit.viewer).await?;
     let host = device(tx, auth, &permit.host).await?;
-    let viewer_binding = binding(tx, auth, &permit.viewer)
-        .await?
-        .ok_or(ScreenError::Denied)?;
-    let host_binding = binding(tx, auth, &permit.host)
-        .await?
-        .ok_or(ScreenError::Denied)?;
+    // The requester may be the host's owner. Original viewer authority always
+    // belongs to the immutable viewer owner, never the current caller's owner.
+    let expiry = crate::identity::store::session_expiry(tx, &viewer.owner, value.viewer_session())
+        .await
+        .map_err(identity_error)?;
+    if !expiry.is_some_and(|expiry| expiry > 0 && expiry as u64 > now) {
+        return Err(ScreenError::Denied);
+    }
+    let viewer_membership = membership(tx, &viewer.owner).await?;
+    let host_membership = membership(tx, &host.owner).await?;
+    let viewer_binding = binding(tx, &viewer).await?.ok_or(ScreenError::Denied)?;
+    let host_binding = binding(tx, &host).await?.ok_or(ScreenError::Denied)?;
     revalidate_view(
         auth,
         signed,
         ViewRows {
             viewer: &viewer,
             host: &host,
+            viewer_membership: &viewer_membership,
+            host_membership: &host_membership,
             viewer_binding: &viewer_binding,
             host_binding: &host_binding,
             viewer_active: None,
@@ -224,6 +238,37 @@ async fn revalidate(
     )
 }
 impl ScreenStore for Store {
+    async fn targets(
+        &self,
+        auth: &AuthenticatedSession,
+        signed: SignedRequest,
+        user: &UserId,
+        now: u64,
+    ) -> Result<Vec<ScreenTarget>, ScreenError> {
+        bounded(async {
+            let mut tx = self.identity.transaction().await.map_err(unavailable)?;
+            let result = async {
+                authorize(&mut tx, auth, &signed, now).await?;
+                let owner = Owner { user_id: user.clone(), tenant_id: auth.session.owner.tenant_id.clone() };
+                let actor = membership(&mut tx, &auth.session.owner).await?;
+                let target = membership(&mut tx, &owner).await?;
+                actor.authorize_screen(&auth.session.owner, &target).map_err(|_| ScreenError::Denied)?;
+                let rows = sqlx::query("SELECT d.*,b.device_id IS NOT NULL AS screen_registered FROM nds_devices d LEFT JOIN nds_screen_bindings b ON b.device_id=d.device_id AND b.user_id=d.user_id AND b.tenant_id=d.tenant_id WHERE d.user_id=$1 AND d.tenant_id=$2 AND d.status='active' ORDER BY d.ordinal LIMIT $3")
+                    .bind(owner.user_id.as_str()).bind(owner.tenant_id.as_str())
+                    .bind((MAX_ACTIVE_DEVICES + 1) as i64)
+                    .fetch_all(&mut *tx).await.map_err(unavailable)?;
+                if rows.len() > MAX_ACTIVE_DEVICES { return Err(unavailable(())); }
+                rows.iter().map(|row| {
+                    let device = crate::devices::store::device(row).map_err(unavailable)?;
+                    Ok(ScreenTarget {
+                        device: device.id, name: device.name, platform: device.platform,
+                        registered: row.try_get("screen_registered").map_err(unavailable)?,
+                    })
+                }).collect()
+            }.await;
+            finish(tx, result).await
+        }).await
+    }
     async fn binding(
         &self,
         auth: &AuthenticatedSession,
@@ -235,8 +280,13 @@ impl ScreenStore for Store {
             let mut tx = self.identity.transaction().await.map_err(unavailable)?;
             let result = async {
                 authorize(&mut tx, auth, &signed, now).await?;
-                device(&mut tx, auth, target).await?;
-                binding(&mut tx, auth, target).await
+                let target = device(&mut tx, auth, target).await?;
+                let actor = membership(&mut tx, &auth.session.owner).await?;
+                let target_member = membership(&mut tx, &target.owner).await?;
+                actor
+                    .authorize_screen(&auth.session.owner, &target_member)
+                    .map_err(|_| ScreenError::Denied)?;
+                binding(&mut tx, &target).await
             }
             .await;
             finish(tx, result).await
@@ -256,7 +306,7 @@ impl ScreenStore for Store {
             let result = async {
                 let now = authorize(&mut tx, auth, &signed, now).await?;
                 let device = device(&mut tx, auth, &signed.device).await?;
-                let current = binding(&mut tx, auth, &signed.device).await?;
+                let current = binding(&mut tx, &device).await?;
                 let (candidate, bytes) = validate_endpoint_claim(auth, &signed, &device, current.as_ref(), claim, &self.origin, now)?;
                 let key = crate::devices::verifying_key(&nddev_device_sync_domain::devices::PublicDeviceKey(candidate.endpoint)).ok_or(ScreenError::Denied)?;
                 if key.verify_strict(&bytes, &ed25519_dalek::Signature::from_bytes(&signature)).is_err() {
@@ -305,9 +355,13 @@ impl ScreenStore for Store {
                 }
                 let viewer = device(&mut tx, auth, &signed.device).await?;
                 let host = device(&mut tx, auth, &request.target).await?;
-                let viewer_binding = binding(&mut tx, auth, &signed.device).await?.ok_or(ScreenError::Denied)?;
-                let host_binding = binding(&mut tx, auth, &request.target).await?.ok_or(ScreenError::Denied)?;
-                let active = sqlx::query("SELECT * FROM nds_screen_views WHERE user_id=$1 AND tenant_id=$2 AND state<>'ended' AND (viewer_device IN($3,$4) OR host_device IN($3,$4)) LIMIT 2").bind(owner.user_id.as_str()).bind(owner.tenant_id.as_str()).bind(viewer.id.as_str()).bind(host.id.as_str()).fetch_all(&mut *tx).await.map_err(unavailable)?;
+                let viewer_membership = membership(&mut tx, &viewer.owner).await?;
+                let host_membership = membership(&mut tx, &host.owner).await?;
+                let viewer_binding = binding(&mut tx, &viewer).await?.ok_or(ScreenError::Denied)?;
+                let host_binding = binding(&mut tx, &host).await?.ok_or(ScreenError::Denied)?;
+                // Participant admission is shared across owners. Expired or revoked
+                // original sessions must not occupy a live device slot.
+                let active = sqlx::query("SELECT v.* FROM nds_screen_views v WHERE v.tenant_id=$1 AND v.state<>'ended' AND v.expires_at_ms>$4 AND (v.viewer_device IN($2,$3) OR v.host_device IN($2,$3)) AND EXISTS(SELECT 1 FROM nds_sessions s WHERE s.token_digest=v.viewer_session AND s.user_id=v.user_id AND s.tenant_id=v.tenant_id AND s.expires_at_ms>$4) LIMIT 2").bind(owner.tenant_id.as_str()).bind(viewer.id.as_str()).bind(host.id.as_str()).bind(integer(now)?).fetch_all(&mut *tx).await.map_err(unavailable)?;
                 let active = active.iter().map(intent).collect::<Result<Vec<_>, _>>()?;
                 let permit = authorize_view(
                     auth,
@@ -315,6 +369,8 @@ impl ScreenStore for Store {
                     ViewRows {
                         viewer: &viewer,
                         host: &host,
+                        viewer_membership: &viewer_membership,
+                        host_membership: &host_membership,
                         viewer_binding: &viewer_binding,
                         host_binding: &host_binding,
                         viewer_active: active.iter().find(|v| v.occupies(&viewer.id, now)),
@@ -363,7 +419,7 @@ impl ScreenStore for Store {
             let result = async {
                 let now = authorize(&mut tx, auth, &signed, now).await?;
                 let owner = &auth.session.owner;
-                let row = sqlx::query("SELECT * FROM nds_screen_views WHERE user_id=$1 AND tenant_id=$2 AND host_device=$3 AND state<>'ended' LIMIT 1").bind(owner.user_id.as_str()).bind(owner.tenant_id.as_str()).bind(signed.device.as_str()).fetch_optional(&mut *tx).await.map_err(unavailable)?;
+                let row = sqlx::query("SELECT * FROM nds_screen_views WHERE tenant_id=$1 AND host_device=$2 AND state<>'ended' LIMIT 1").bind(owner.tenant_id.as_str()).bind(signed.device.as_str()).fetch_optional(&mut *tx).await.map_err(unavailable)?;
                 if let Some(row) = row {
                     let value = intent(&row)?;
                     revalidate(&mut tx, auth, &signed, &value, ViewActor::Host, now).await?;
@@ -388,7 +444,7 @@ impl ScreenStore for Store {
             let mut tx = self.identity.transaction().await.map_err(unavailable)?;
             let result = async {
                 let now = authorize(&mut tx, auth, &signed, now).await?;
-                let row = load(&mut tx, auth, id).await?;
+                let row = load(&mut tx, auth, &signed, id).await?;
                 let value = intent(&row)?;
                 revalidate(&mut tx, auth, &signed, &value, ViewActor::Viewer, now).await?;
                 Ok((value, row.try_get("native_grant").map_err(unavailable)?))
@@ -411,7 +467,7 @@ impl ScreenStore for Store {
             let result = async {
                 let now = authorize(&mut tx, auth, &signed, now).await?;
                 native_grant_payload(&native_grant)?;
-                let row = load(&mut tx, auth, id).await?;
+                let row = load(&mut tx, auth, &signed, id).await?;
                 let mut value = intent(&row)?;
                 revalidate(&mut tx, auth, &signed, &value, ViewActor::Host, now).await?;
                 if value.state(now) == ViewState::Ended {
@@ -453,7 +509,7 @@ impl ScreenStore for Store {
             let mut tx = self.identity.transaction().await.map_err(unavailable)?;
             let result = async {
                 authorize(&mut tx, auth, &signed, now).await?;
-                let row = load(&mut tx, auth, id).await?;
+                let row = load(&mut tx, auth, &signed, id).await?;
                 let viewer: String = row.try_get("viewer_device").map_err(unavailable)?;
                 let host: String = row.try_get("host_device").map_err(unavailable)?;
                 if signed.device.as_str() != viewer && signed.device.as_str() != host {
@@ -486,5 +542,16 @@ pub(crate) async fn retire_session(tx: &mut Tx<'_>, digest: &[u8]) -> Result<(),
     .bind(digest)
     .execute(&mut **tx)
     .await?;
+    Ok(())
+}
+/// Membership removal affects both participants. Demotion retires only views
+/// requiring administrative cross-user permission; personal views remain valid.
+pub(crate) async fn retire_owner(
+    tx: &mut Tx<'_>,
+    owner: &nddev_device_sync_domain::identity::Owner,
+    administrative_only: bool,
+) -> Result<(), sqlx::Error> {
+    sqlx::query("UPDATE nds_screen_views v SET state='ended',native_grant=NULL WHERE state<>'ended' AND ((NOT $3 AND EXISTS(SELECT 1 FROM nds_devices d WHERE d.user_id=$1 AND d.tenant_id=$2 AND d.device_id IN(v.viewer_device,v.host_device))) OR ($3 AND EXISTS(SELECT 1 FROM nds_devices d WHERE d.device_id=v.viewer_device AND d.user_id=$1 AND d.tenant_id=$2) AND EXISTS(SELECT 1 FROM nds_devices d WHERE d.device_id=v.host_device AND (d.user_id<>$1 OR d.tenant_id<>$2))))")
+        .bind(owner.user_id.as_str()).bind(owner.tenant_id.as_str()).bind(administrative_only).execute(&mut **tx).await?;
     Ok(())
 }

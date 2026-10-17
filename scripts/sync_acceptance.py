@@ -17,7 +17,7 @@ from sync_capacity_acceptance import check_capacity
 
 def b64(value): return base64.urlsafe_b64encode(value).decode().rstrip('=')
 
-def check_sync(request, token, restart, directory, sql, origin):
+def check_sync(request, token, restart, directory, sql, origin, observability_configured=False):
     parsed = urlsplit(origin)
     assert parsed.scheme == 'http' and parsed.hostname in ('127.0.0.1', 'localhost') and parsed.port
     directory=Path(directory)/'sync';directory.mkdir(mode=0o700)
@@ -61,6 +61,12 @@ def check_sync(request, token, restart, directory, sql, origin):
         return {'schema_version':2,'operation_id':id,'device_id':device,'entity_type':'vault_record','entity_id':'acceptance-record','base_revision':revision,'idempotency_key':id,
             'payload':{'algorithm':'aes-256-gcm','key_id':'acceptance-key','nonce':b64(secrets.token_bytes(12)),'ciphertext':b64(secrets.token_bytes(32))}}
     first,id1=enroll(1);second,id2=enroll(2)
+    if observability_configured:
+        status,raw=send(first,id1,'/v2/observability/status')
+        assert status==200 and 'sources' in json.loads(raw), 'configured bootstrap operator lost its pipeline access'
+        status,raw=send(first,id1,'/v2/observability/client-policy')
+        assert status==200 and json.loads(raw)=={'export_mode':'enabled'}
+
     value=operation(id1);body=json.dumps(value,separators=(',',':')).encode()
     assert request('/v2/sync/operations',value,token=token)[0]==400
     assert send(first,id1,'/v2/sync/operations',body,signature_body=b'altered')[0]==400
