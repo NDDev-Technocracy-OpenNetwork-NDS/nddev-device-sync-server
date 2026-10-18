@@ -109,6 +109,13 @@ try:
             time.sleep(0.1)
         else:
             raise AssertionError("disposable PostgreSQL did not initialize")
+        from authority_migration_acceptance import check_authority_upgrade
+        sql("CREATE DATABASE nds_authority_upgrade OWNER nds_migrator")
+        try:
+            check_authority_upgrade(lambda statement, role="postgres", check=True:
+                                    sql(statement, role, check, "nds_authority_upgrade"))
+        finally:
+            sql("DROP DATABASE nds_authority_upgrade")
         if options.upgrade_company:
             from company_migration_acceptance import check_company_upgrade
             sql("CREATE DATABASE nds_company_upgrade OWNER nds_migrator")
@@ -176,8 +183,9 @@ try:
             logs += command(str(BINARY), "migrate", env=migration_env) + "\n"
             if upgrade_witness is not None:
                 verify(sql, upgrade_witness)
-        assert sql("SELECT count(*) FROM _sqlx_migrations WHERE success").stdout.strip() == "13"
-        assert sql("SELECT value FROM nddev_schema_meta WHERE key='schema_version'").stdout.strip() == "13"
+                assert sql("SELECT authenticated_at_ms=GREATEST(expires_at_ms-28800000,0) FROM nds_sessions").stdout.strip() == "t"
+        assert sql("SELECT count(*) FROM _sqlx_migrations WHERE success").stdout.strip() == "14"
+        assert sql("SELECT value FROM nddev_schema_meta WHERE key='schema_version'").stdout.strip() == "14"
         assert sql("SELECT to_regclass('public.nds_sync_operations') IS NULL").stdout.strip() == "t"
         assert sql("UPDATE public.nds_replica_counters SET admission_version=3 WHERE false", "nds_runtime", check=False).returncode != 0
         if options.upgrade_from is not None:
@@ -189,10 +197,12 @@ try:
             assert server.returncode == 0
             server = None
             clean(sql, upgrade_witness)
-            print("Schema9-to13 upgrade passed: seven canonical identity/device/vault/sync rows preserve original columns and decrypt after migration and repeat; new runtime rejects schema9 and old runtime rejects schema13 readiness; old migration history retained.")
+            print("Schema9-to14 upgrade passed: seven canonical identity/device/vault/sync rows preserve original columns and decrypt after migration and repeat; new runtime rejects schema9 and old runtime rejects schema14 readiness; old migration history retained.")
         assert sql("CREATE TABLE prohibited(id INT)", "nds_runtime", check=False).returncode != 0
         assert sql("UPDATE _sqlx_migrations SET success=false WHERE false", "nds_runtime", check=False).returncode != 0
-        assert sql("UPDATE nds_sessions SET expires_at_ms=expires_at_ms WHERE false", "nds_runtime", check=False).returncode != 0
+        assert sql("UPDATE nds_sessions SET expires_at_ms=expires_at_ms WHERE false", "nds_runtime", check=False).returncode == 0
+        assert sql("UPDATE nds_sessions SET authenticated_at_ms=authenticated_at_ms WHERE false", "nds_runtime", check=False).returncode != 0
+        assert sql("UPDATE nds_sessions SET auth_method=auth_method WHERE false", "nds_runtime", check=False).returncode != 0
         assert sql("UPDATE nds_sessions SET user_id=user_id WHERE false", "nds_runtime", check=False).returncode != 0
         assert sql("UPDATE nds_devices SET public_key=public_key WHERE false", "nds_runtime", check=False).returncode != 0
         assert sql("UPDATE nds_enrollment_challenges SET challenge=challenge WHERE false", "nds_runtime", check=False).returncode != 0

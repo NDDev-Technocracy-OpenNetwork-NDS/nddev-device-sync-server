@@ -2,14 +2,16 @@ use super::{Service, now_ms};
 use crate::{AppState, admission::PeerAddress, protocol_v2 as dto};
 use axum::{
     Json, Router,
+    body::Bytes,
     extract::{
-        Extension, Form, Query, State,
+        Extension, Form, OriginalUri, Query, State,
         rejection::{FormRejection, JsonRejection, QueryRejection},
     },
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{Html, IntoResponse, Response},
     routing::{get, post},
 };
+use base64::Engine;
 use nddev_device_sync_application::identity::{
     AuthMethod, BrowserApproval, GITHUB_LIFETIME_MS, GITHUB_POLL_MS, GithubCallback,
     GithubExchange, IdentityError, InvitationClaim, InvitationId, IssuedSession, Locale,
@@ -31,6 +33,7 @@ pub fn routes() -> Router<AppState> {
         .route("/v2/auth/github/approve", post(github_approve))
         .route("/v2/auth/github/exchange", post(github_exchange))
         .route("/v2/session", get(session).delete(revoke))
+        .route("/v2/session/renew", post(renew_session))
 }
 
 #[derive(Debug)]
@@ -534,6 +537,58 @@ async fn session(
             .await?,
     )?))
 }
+
+async fn renew_session(
+    State(state): State<AppState>,
+    browser: Option<Extension<crate::browser::BrowserRequest>>,
+    OriginalUri(uri): OriginalUri,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Result<Response, crate::sync::http::ApiError> {
+    use nddev_device_sync_application::sync::SyncError;
+    if !body.is_empty() || uri.query().is_some() {
+        return Err(SyncError::Invalid.into());
+    }
+    let now = now_ms().map_err(|_| SyncError::Unavailable)?;
+    let (auth, signed) =
+        crate::sync::http::authorize(&state, &headers, "POST", &uri, &body, now).await?;
+    let renewed = state
+        .identity
+        .as_ref()
+        .ok_or(SyncError::Unavailable)?
+        .renew_session(&auth, &signed, now)
+        .await?;
+    let verified = time::OffsetDateTime::from_unix_timestamp_nanos(
+        i128::from(renewed.verified_at_ms) * 1_000_000,
+    )
+    .map_err(|_| SyncError::Unavailable)?;
+    let expires_at_ms = renewed.session.expires_at_ms;
+    let mut response = Json(dto::SessionRenewal {
+        session: session_dto(renewed.session).map_err(|_| SyncError::Unavailable)?,
+        verified_at: verified
+            .format(&time::format_description::well_known::Rfc3339)
+            .map_err(|_| SyncError::Unavailable)?,
+        authorization_id: base64::engine::general_purpose::URL_SAFE_NO_PAD
+            .encode(renewed.authorization_id),
+    })
+    .into_response();
+    if browser.is_some() {
+        let cookie = crate::browser::session_cookie(
+            bearer(&headers).map_err(|_| SyncError::Denied)?,
+            expires_at_ms,
+            now_ms()
+                .map_err(|_| SyncError::Unavailable)?
+                .max(renewed.verified_at_ms),
+        )
+        .map_err(|_| SyncError::Unavailable)?;
+        response
+            .headers_mut()
+            .append(axum::http::header::SET_COOKIE, cookie);
+    }
+    tracing::info!(module="identity",scope="http",event.name="identity.session.renewed",user.id=%auth.session.owner.user_id.as_str(),tenant.id=%auth.session.owner.tenant_id.as_str(),device.id=%signed.device.as_str(),outcome="ok");
+    Ok(response)
+}
+
 async fn revoke(State(state): State<AppState>, headers: HeaderMap) -> Result<StatusCode, ApiError> {
     service(&state)?
         .revoke(bearer(&headers)?, now_ms()?)

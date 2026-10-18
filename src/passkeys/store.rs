@@ -75,7 +75,7 @@ impl Store {
             let identity = crate::identity::store::Store::new(self.0.clone());
             let mut tx = identity.transaction().await?;
             let now = now.max(crate::identity::now_ms()?);
-            active_session(&mut tx, auth, now).await?;
+            let now = active_session(&mut tx, auth, now).await?;
             let current: Option<(Option<Vec<u8>>, String)> = sqlx::query_as("SELECT passkey_credential_id,auth_method FROM nds_sessions WHERE token_digest=$1 AND user_id=$2 AND tenant_id=$3 AND expires_at_ms>$4")
                 .bind(auth.binding.0.as_slice()).bind(auth.session.owner.user_id.as_str()).bind(auth.session.owner.tenant_id.as_str()).bind(i64::try_from(now).map_err(unavailable)?)
                 .fetch_optional(&mut *tx).await.map_err(unavailable)?;
@@ -108,7 +108,7 @@ impl Store {
         let identity = crate::identity::store::Store::new(self.0.clone());
         let mut tx = identity.transaction().await?;
         let now = now.max(crate::identity::now_ms()?);
-        active_session(&mut tx, auth, now).await?;
+        let now = active_session(&mut tx, auth, now).await?;
         if !auth.session.recently_authenticated(now) { return Err(IdentityError::RecentAuthenticationRequired); }
         let count: i64 = sqlx::query_scalar(
             "SELECT count(*) FROM nds_passkeys WHERE user_id=$1 AND tenant_id=$2",
@@ -162,11 +162,12 @@ async fn active_session(
     tx: &mut crate::identity::store::Tx<'_>,
     auth: &AuthenticatedSession,
     now: u64,
-) -> Result<(), IdentityError> {
+) -> Result<u64, IdentityError> {
+    let now = crate::identity::store::authorization_clock(tx, &auth.session.owner, now).await?;
     let expiry =
         crate::identity::store::session_expiry(tx, &auth.session.owner, auth.binding).await?;
     if expiry.is_some_and(|value| value > 0 && (value as u64) > now) {
-        Ok(())
+        Ok(now)
     } else {
         Err(IdentityError::Denied)
     }

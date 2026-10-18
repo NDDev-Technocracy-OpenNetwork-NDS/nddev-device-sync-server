@@ -4,6 +4,8 @@ use nddev_device_sync_domain::organizations::{CompanyRole, Membership};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use std::future::Future;
 
+mod renewal;
+
 #[derive(Clone)]
 pub struct Store {
     pool: PgPool,
@@ -20,6 +22,43 @@ fn unsigned(value: i64) -> Result<u64, IdentityError> {
 }
 fn digest(value: Vec<u8>) -> Result<ProtectedDigest, IdentityError> {
     Ok(ProtectedDigest(value.try_into().map_err(unavailable)?))
+}
+
+fn retained_session(row: &sqlx::postgres::PgRow) -> Result<Session, IdentityError> {
+    Ok(Session {
+        owner: Owner {
+            user_id: UserId::new(row.try_get::<String, _>("user_id").map_err(unavailable)?)
+                .map_err(unavailable)?,
+            tenant_id: TenantId::new(row.try_get::<String, _>("tenant_id").map_err(unavailable)?)
+                .map_err(unavailable)?,
+        },
+        method: match row.try_get::<&str, _>("auth_method").map_err(unavailable)? {
+            "email_otp" => AuthMethod::EmailOtp,
+            "github" => AuthMethod::Github,
+            "passkey" => AuthMethod::Passkey,
+            _ => return Err(IdentityError::Unavailable),
+        },
+        authenticated_at_ms: unsigned(row.try_get("authenticated_at_ms").map_err(unavailable)?)?,
+        expires_at_ms: unsigned(row.try_get("expires_at_ms").map_err(unavailable)?)?,
+    })
+}
+
+/// Reuse the owner's existing authorization clock. A server clock rollback
+/// cannot restore an already observed expiry or make an old sign-in recent.
+pub(crate) async fn authorization_clock(
+    tx: &mut Tx<'_>,
+    owner: &Owner,
+    now: u64,
+) -> Result<u64, IdentityError> {
+    let floor: Option<i64> = sqlx::query_scalar(
+        "SELECT clock_floor_ms FROM nds_replica_counters WHERE user_id=$1 AND tenant_id=$2",
+    )
+    .bind(owner.user_id.as_str())
+    .bind(owner.tenant_id.as_str())
+    .fetch_optional(&mut **tx)
+    .await
+    .map_err(unavailable)?;
+    Ok(now.max(floor.map(unsigned).transpose()?.unwrap_or(0)))
 }
 
 pub(crate) async fn bounded<T>(
@@ -192,9 +231,9 @@ pub(crate) async fn insert_session(
     if count as usize >= MAX_SESSIONS {
         return Err(IdentityError::Capacity);
     }
-    sqlx::query("INSERT INTO nds_sessions(token_digest,user_id,tenant_id,auth_method,expires_at_ms,passkey_credential_id) VALUES ($1,$2,$3,$4,$5,$6)")
+    sqlx::query("INSERT INTO nds_sessions(token_digest,user_id,tenant_id,auth_method,expires_at_ms,passkey_credential_id,authenticated_at_ms) VALUES ($1,$2,$3,$4,$5,$6,$7)")
         .bind(issue.digest.0.as_slice()).bind(issue.session.owner.user_id.as_str()).bind(issue.session.owner.tenant_id.as_str())
-        .bind(match issue.session.method { AuthMethod::EmailOtp => "email_otp", AuthMethod::Github => "github", AuthMethod::Passkey => "passkey" }).bind(millis(issue.session.expires_at_ms)?).bind(passkey).execute(&mut **tx).await.map_err(unavailable)?;
+        .bind(match issue.session.method { AuthMethod::EmailOtp => "email_otp", AuthMethod::Github => "github", AuthMethod::Passkey => "passkey" }).bind(millis(issue.session.expires_at_ms)?).bind(passkey).bind(millis(issue.session.authenticated_at_ms)?).execute(&mut **tx).await.map_err(unavailable)?;
     Ok(issue.session)
 }
 
@@ -344,12 +383,12 @@ impl IdentityStore for Store {
             let mut tx = self.transaction().await?;
             // Observed expiry or removal is terminal for this session. A later
             // invitation cannot revive a session already denied by membership.
-            sqlx::query("DELETE FROM nds_sessions s WHERE token_digest=$1 AND (expires_at_ms <= $2 OR NOT EXISTS(SELECT 1 FROM nds_owner o WHERE o.user_id=s.user_id AND o.tenant_id=s.tenant_id AND o.membership_active))").bind(token.0.as_slice()).bind(millis(now)?).execute(&mut *tx).await.map_err(unavailable)?;
-            let row = sqlx::query("SELECT s.user_id,s.tenant_id,s.auth_method,s.expires_at_ms FROM nds_sessions s JOIN nds_owner o USING(user_id,tenant_id) WHERE s.token_digest=$1 AND s.expires_at_ms > $2 AND o.membership_active").bind(token.0.as_slice()).bind(millis(now)?).fetch_optional(&mut *tx).await.map_err(unavailable)?;
+            sqlx::query("DELETE FROM nds_sessions s WHERE token_digest=$1 AND (expires_at_ms <= GREATEST($2,COALESCE((SELECT clock_floor_ms FROM nds_replica_counters c WHERE c.user_id=s.user_id AND c.tenant_id=s.tenant_id),0)) OR NOT EXISTS(SELECT 1 FROM nds_owner o WHERE o.user_id=s.user_id AND o.tenant_id=s.tenant_id AND o.membership_active))").bind(token.0.as_slice()).bind(millis(now)?).execute(&mut *tx).await.map_err(unavailable)?;
+            let row = sqlx::query("SELECT s.user_id,s.tenant_id,s.auth_method,s.authenticated_at_ms,s.expires_at_ms FROM nds_sessions s JOIN nds_owner o USING(user_id,tenant_id) LEFT JOIN nds_replica_counters c USING(user_id,tenant_id) WHERE s.token_digest=$1 AND s.expires_at_ms > GREATEST($2,COALESCE(c.clock_floor_ms,0)) AND o.membership_active").bind(token.0.as_slice()).bind(millis(now)?).fetch_optional(&mut *tx).await.map_err(unavailable)?;
             // Denial must not roll back the observed-expiry deletion.
             tx.commit().await.map_err(unavailable)?;
             let row = row.ok_or(IdentityError::Denied)?;
-            Ok(Session { owner: Owner { user_id: UserId::new(row.try_get::<String,_>("user_id").map_err(unavailable)?).map_err(unavailable)?, tenant_id: TenantId::new(row.try_get::<String,_>("tenant_id").map_err(unavailable)?).map_err(unavailable)? }, method: match row.try_get::<&str,_>("auth_method").map_err(unavailable)? { "email_otp"=>AuthMethod::EmailOtp,"github"=>AuthMethod::Github,"passkey"=>AuthMethod::Passkey,_=>return Err(IdentityError::Unavailable) }, expires_at_ms: unsigned(row.try_get("expires_at_ms").map_err(unavailable)?)? })
+            retained_session(&row)
         }).await
     }
     async fn revoke(&self, token: ProtectedDigest, now: u64) -> Result<(), IdentityError> {
