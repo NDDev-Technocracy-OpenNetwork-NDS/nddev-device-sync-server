@@ -36,7 +36,7 @@ def check_sync(request, token, restart, directory, sql, origin, observability_co
         assert status==201
         return key,device['device_id']
     http=urllib.request.build_opener(urllib.request.ProxyHandler({}))
-    def send(key,device,path,body=None,nonce=None,signature_body=None,target=None,include_headers=False):
+    def send(key,device,path,body=None,nonce=None,signature_body=None,target=None,include_headers=False,session=token):
         method='GET' if body is None else 'POST';body=b'' if body is None else body
         digest='sha-256=:'+base64.b64encode(hashlib.sha256(body if signature_body is None else signature_body).digest()).decode()+':'
         now=int(time.time());nonce=nonce or b64(secrets.token_bytes(24))
@@ -46,7 +46,7 @@ def check_sync(request, token, restart, directory, sql, origin, observability_co
         content=directory/(uuid.uuid4().hex+'.bin');content.write_bytes(base.encode())
         try:signature=openssl('pkeyutl','-sign','-inkey',key,'-rawin','-in',content)
         finally:content.unlink()
-        headers={'Authorization':'Bearer '+token,'Signature-Input':'nds='+params,'Signature':'nds=:'+base64.b64encode(signature).decode()+':','Content-Digest':digest,'Content-Type':'application/json'}
+        headers={'Authorization':'Bearer '+session,'Signature-Input':'nds='+params,'Signature':'nds=:'+base64.b64encode(signature).decode()+':','Content-Digest':digest,'Content-Type':'application/json'}
         req=urllib.request.Request(origin+path,data=body if method=='POST' else None,headers=headers,method=method)
         try:response=http.open(req,timeout=8)
         except urllib.error.HTTPError as error:response=error
@@ -61,6 +61,35 @@ def check_sync(request, token, restart, directory, sql, origin, observability_co
         return {'schema_version':2,'operation_id':id,'device_id':device,'entity_type':'vault_record','entity_id':'acceptance-record','base_revision':revision,'idempotency_key':id,
             'payload':{'algorithm':'aes-256-gcm','key_id':'acceptance-key','nonce':b64(secrets.token_bytes(12)),'ciphertext':b64(secrets.token_bytes(32))}}
     first,id1=enroll(1);second,id2=enroll(2)
+    # Real signed renewal must not create another session or refresh its
+    # sensitive-operation proof. Reuse the independent OpenSSL signer above.
+    authentication = json.loads(sql("SELECT json_object_agg(encode(token_digest,'hex'),authenticated_at_ms) FROM nds_sessions").stdout)
+    count = sql("SELECT count(*) FROM nds_sessions").stdout.strip()
+    nonce = b64(secrets.token_bytes(24))
+    status, raw, headers = send(first,id1,'/v2/session/renew',b'',nonce=nonce,include_headers=True)
+    assert status == 200
+    renewed = json.loads(raw)
+    assert set(renewed) == {'session','verified_at','authorization_id'}
+    assert token not in json.dumps(renewed) and not any(name.lower() == 'set-cookie' for name in headers)
+    from datetime import datetime, timedelta
+    expires = datetime.fromisoformat(renewed['session']['expires_at'].replace('Z','+00:00'))
+    verified = datetime.fromisoformat(renewed['verified_at'].replace('Z','+00:00'))
+    assert expires - verified == timedelta(days=7)
+    identity = renewed['authorization_id']
+    assert len(identity) == 43 and len(base64.urlsafe_b64decode(identity+'=')) == 32
+    sensitive.append(identity)
+    expiry = json.loads(sql("SELECT json_object_agg(encode(token_digest,'hex'),expires_at_ms) FROM nds_sessions").stdout)
+    status, raw = send(first,id1,'/v2/session/renew',b'',nonce=nonce)
+    assert status == 409 and json.loads(raw) == {'error':'replayed_nonce'}
+    assert json.loads(sql("SELECT json_object_agg(encode(token_digest,'hex'),expires_at_ms) FROM nds_sessions").stdout) == expiry
+    status, raw = send(first,id1,'/v2/session/renew',b'')
+    assert status == 200 and json.loads(raw)['authorization_id'] == identity
+    assert sql("SELECT count(*) FROM nds_sessions").stdout.strip() == count
+    assert json.loads(sql("SELECT json_object_agg(encode(token_digest,'hex'),authenticated_at_ms) FROM nds_sessions").stdout) == authentication
+    assert send(first,id1,'/v2/session/renew',b'',session=identity)[0] == 401
+    assert send(first,id1,'/v2/session/renew',b'{}')[0] == 400
+    assert send(first,id1,'/v2/session/renew?owner=other',b'')[0] == 400
+    print('Authority renewal passed: real device signatures, seven-day receipt, stable non-credential identity, replay refusal and unchanged original authentication/session count.')
     if observability_configured:
         status,raw=send(first,id1,'/v2/observability/status')
         assert status==200 and 'sources' in json.loads(raw), 'configured bootstrap operator lost its pipeline access'
@@ -155,6 +184,8 @@ def check_sync(request, token, restart, directory, sql, origin, observability_co
     assert request('/v2/devices/'+id1,token=token,method='DELETE')[0]==204
     assert send(first,id1,'/v2/sync/operations',body)[0]==403
     assert send(first,id1,'/v2/sync/operations?after_seq=0')[0]==403
+    assert send(first,id1,'/v2/session/renew',b'')[0]==403
+    assert request('/v2/session',token=token)[0]==200
     assert sql('UPDATE nds_replica_operations SET status=201 WHERE false','nds_runtime',check=False).returncode!=0
     assert sql('UPDATE nds_replica_counters SET admission_version=3 WHERE false','nds_runtime',check=False).returncode!=0
     # Explicit cleanup of this fixture's two identities before the independent

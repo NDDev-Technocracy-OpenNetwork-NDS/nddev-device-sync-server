@@ -151,8 +151,9 @@ def check_company_identity(request, sql, mailbox, http, pepper, restart, directo
     reset_cases()
     count = int(sql(f"SELECT count(*) FROM nds_sessions WHERE user_id={literal(user)}").stdout)
     fillers = [secrets.token_bytes(32) for _ in range(32 - count)]
+    issued_at = int(time.time()*1000)
     for digest in fillers:
-        sql(f"INSERT INTO nds_sessions(token_digest,user_id,tenant_id,auth_method,expires_at_ms) VALUES({binary(digest)},{literal(user)},{literal(tenant)},'email_otp',{int(time.time()*1000)+28800000})")
+        sql(f"INSERT INTO nds_sessions(token_digest,user_id,tenant_id,auth_method,authenticated_at_ms,expires_at_ms) VALUES({binary(digest)},{literal(user)},{literal(tenant)},'email_otp',{issued_at},{issued_at+604800000})")
     proof = challenge(email)
     assert request("/v2/auth/email/verify", proof) == (503, {"error": "server_busy"})
     assert sql(f"SELECT consumed FROM nds_email_challenges WHERE challenge_id={literal(proof['challenge_id'])}").stdout.strip() == "f"

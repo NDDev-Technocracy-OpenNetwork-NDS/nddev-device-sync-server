@@ -311,7 +311,7 @@ def check_identity(binary, directory, env, sql, command, validate_events, fixtur
         expired_logout = second_session()
         sensitive.append(expired_logout)
         mail_count = len(messages())
-        sql("UPDATE nds_sessions SET expires_at_ms=0")
+        sql("UPDATE nds_sessions SET expires_at_ms=authenticated_at_ms")
         assert request("/v2/session", token=expired_logout, method="DELETE")[0] == 401
         assert sql("SELECT count(*) FROM nds_sessions").stdout.strip() == "1", "expired logout deletion rolled back"
         assert request("/v2/session", token=session_issued["session_token"])[0] == 401
@@ -326,9 +326,9 @@ def check_identity(binary, directory, env, sql, command, validate_events, fixtur
         if fixture_passkeys:
             recent = second_session()
             sensitive.append(recent)
-            # Only this owned synthetic session is aged. The real Rust service
+            # Only owned synthetic fixture proofs are aged. The real Rust service
             # must deny the sensitive action while retaining ordinary identity.
-            sql("UPDATE nds_sessions SET expires_at_ms=expires_at_ms-360000")
+            sql("UPDATE nds_sessions SET authenticated_at_ms=authenticated_at_ms-360000")
             assert request("/v2/session", token=recent)[0] == 200
             assert request("/v2/auth/passkeys/start", {"registration": True}, token=recent) == (403, {"error": "recent_authentication_required"})
             assert request("/v2/auth/passkeys/" + "0"*64, method="DELETE", token=recent) == (403, {"error": "recent_authentication_required"})

@@ -57,8 +57,8 @@ async fn authorize(
     now: u64,
 ) -> Result<(), DeviceError> {
     let owner = &authorization.session.owner;
-    // Every session writer, revocation and observed-expiry deletion holds the
-    // existing identity transaction lock. No session UPDATE grant is needed.
+    // Every session writer, renewal, revocation and observed-expiry deletion
+    // holds the existing identity transaction lock.
     let expiry = identity_store::session_expiry(tx, owner, authorization.binding)
         .await
         .map_err(identity_error)?;
