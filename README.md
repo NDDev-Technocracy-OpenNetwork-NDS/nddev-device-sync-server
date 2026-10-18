@@ -25,6 +25,11 @@ The current server provides:
 - generated wire types and immutable core/protocol source pins;
 - compatible health metadata without a speculative core module registry.
 
+The server-served passkey handoff uses `src/passkeys/browser.ts`, emitted to the
+existing nonce-protected inline script. Browser-native WebAuthn JSON conversion
+and credential APIs validate their data; Rust retains challenge and identity
+authority. `just browser-check` verifies strict types and generated JS drift.
+
 The legacy `module_count` health field is zero: the server composes no local-tool
 adapters. The native agent discovers those adapters; core owns their observation
 rules and the shared replica policy.
