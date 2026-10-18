@@ -200,7 +200,7 @@ impl Gateway {
         if !response.status().is_success() {
             return Err(match response.status() {
                 StatusCode::BAD_REQUEST => SyncError::Invalid,
-                StatusCode::CONFLICT => SyncError::Revision,
+                StatusCode::CONFLICT => SyncError::KeyConflict,
                 _ => SyncError::Unavailable,
             });
         }
@@ -623,6 +623,39 @@ mod tests {
         ExportTracePartialSuccess, ExportTraceServiceResponse,
     };
     use prost::Message;
+
+    #[tokio::test]
+    async fn upstream_revision_conflict_remains_a_conflict_receipt() {
+        let _ = rustls::crypto::ring::default_provider().install_default();
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let origin =
+            reqwest::Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+        let app = Router::new().route("/incident", post(|| async { StatusCode::CONFLICT }));
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let gateway = Gateway {
+            origin: origin.clone(),
+            trace_origin: origin,
+            ingest: SecretString::from_native("generated_fixture_ingest".into()),
+            admin: SecretString::from_native("generated_fixture_admin".into()),
+            http: reqwest::Client::builder()
+                .no_proxy()
+                .timeout(Duration::from_secs(2))
+                .build()
+                .unwrap(),
+            permits: tokio::sync::Semaphore::new(1),
+        };
+        let result = gateway
+            .forward_bytes("/incident", Some(b"{}".to_vec()), "fixture")
+            .await;
+        server.abort();
+        let response = ApiError::from(result.unwrap_err()).into_response();
+        assert_eq!(response.status(), StatusCode::CONFLICT);
+        let bytes = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(body["error"], "operation_conflict");
+    }
 
     fn response(rejected: i64, message: &str) -> Vec<u8> {
         ExportTraceServiceResponse {
