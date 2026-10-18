@@ -284,8 +284,9 @@ fn catalog_1024_repositories_32_devices_converges_with_bounded_history() {
     let key =
         aead::LessSafeKey::new(aead::UnboundKey::new(&aead::AES_256_GCM, &key_bytes).unwrap());
     // Independently reserve maximum wire sizes for device/account/credential and
-    // six module rows per device; no quota increase or private inventory.
-    let other_rows = DEVICES * 9;
+    // six observations AND six independent consent rows per device.
+    // Keep product quotas unchanged while reserving each original and receipt.
+    let other_rows = DEVICES * (3 + 2 * 6);
     let mut budget = Budget {
         rows: vec![],
         history: HistoryVersion {
