@@ -17,7 +17,12 @@ dependencies-check:
     cargo audit --deny warnings
     cargo deny --locked check licenses sources
 
-check: fmt-check test clippy dependencies-check
+check: browser-check fmt-check test clippy dependencies-check
+
+browser-check:
+    bun install --frozen-lockfile --ignore-scripts
+    bun run check
+    bun run check:generated
 
 protocol-check:
     python3 scripts/check-protocol.py

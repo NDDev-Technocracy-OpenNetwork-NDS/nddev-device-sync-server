@@ -1,0 +1,26 @@
+{
+  "compilerOptions": {
+    "target": "ES2024",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "allowJs": false,
+    "skipLibCheck": false,
+    "verbatimModuleSyntax": true,
+    "noUnusedLocals": true,
+    "noUnusedParameters": true,
+    "noEmitOnError": true,
+    "newLine": "lf",
+    "lib": [
+      "ES2024",
+      "DOM"
+    ],
+    "types": [],
+    "moduleDetection": "legacy"
+  },
+  "files": [
+    "src/passkeys/browser.ts"
+  ]
+}
