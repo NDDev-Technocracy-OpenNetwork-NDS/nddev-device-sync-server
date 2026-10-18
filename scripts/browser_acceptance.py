@@ -50,7 +50,7 @@ def check_browser(origin, owner, code, messages, sql):
     session = cookies["__Host-nds-session"]
     assert session["secure"] and session["httponly"] and session["samesite"] == "Strict"
     assert session["path"] == "/" and not session["domain"]
-    assert 0 < int(session["max-age"]) <= 28800
+    assert 0 < int(session["max-age"]) <= 604800
     token = session.value
     cookie = "__Host-nds-session=" + token
     assert token not in json.dumps(issued)

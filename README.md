@@ -16,6 +16,8 @@ The current server provides:
 - signed company invitations, revision-checked membership and last-administrator protection;
 - bounded passkey metadata and fresh-session credential/session revocation;
 - browser pairing approval, expiring/revocable sessions and bounded abuse controls;
+- signed active-device renewal of seven-day authority, preserving the original
+  sign-in time required for sensitive credential changes;
 - session-bound Ed25519 device enrollment, paged owner inventory and revocation;
 - signed owned screen endpoint binding and finite view metadata/artifact control;
   native capture and shared Flutter pixels are separate consumer acceptance;
@@ -38,8 +40,9 @@ Company identity storage preserves existing user/device/Vault bindings. Personal
 data remains owner-only, including for administrators. The administrative API and
 SMTP invitation/OTP path are implemented. RDS control metadata permits current
 same-company administrators to request another member's device while retaining
-participant-only grants and current-session/membership revalidation. Device
-discovery and end-to-end screen capture remain separate client acceptance. Global monitoring
+participant-only grants, current-session/membership revalidation and signed
+device discovery bounded to 32 targets. Platform capture and rendering are
+qualified by their RDS/client consumers. Global monitoring
 controls remain bound to the configured deployment operator, independently of
 company roles; ordinary clients use the narrow export-policy endpoint.
 

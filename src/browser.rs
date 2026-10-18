@@ -129,8 +129,8 @@ pub async fn transport(
         request.headers_mut().insert(header::AUTHORIZATION, value);
     }
     request.extensions_mut().insert(BrowserRequest);
-    let session_route = request.uri().path() == "/v2/session";
-    let logout = session_route && request.method() == Method::DELETE;
+    let session_route = matches!(request.uri().path(), "/v2/session" | "/v2/session/renew");
+    let logout = request.uri().path() == "/v2/session" && request.method() == Method::DELETE;
     let mut response = next.run(request).await;
     if (logout && response.status() == StatusCode::NO_CONTENT)
         || (session_route && response.status() == StatusCode::UNAUTHORIZED)
