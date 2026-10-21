@@ -30,9 +30,9 @@ def check_identity(binary, directory, env, sql, command, validate_events, fixtur
     logs = ""
     sensitive = []
     captures = {}
-    # Interactive fixtures can run for an hour with real client telemetry.
-    # Keep their capture finite without applying the short test's 2 MiB budget.
-    log_budget = (32 if fixture_receipt is not None else 4) * 1024 * 1024
+    # Short acceptance retains its audit transcript. Long-lived fixtures stream
+    # every record through the same validator without accumulating output.
+    log_budget = 4 * 1024 * 1024
     http = urllib.request.build_opener(urllib.request.ProxyHandler({}))
     try:
         command("docker", "run", "--rm", "--detach", "--name", mailbox, "--user", "10001:10001", "--read-only", "--cap-drop=ALL", "--security-opt", "no-new-privileges:true", "--memory", "128m", "--cpus", "0.5", "--pids-limit", "64", "--publish", "127.0.0.1::1025", "--publish", "127.0.0.1::8025", "--tmpfs", "/data:uid=10001,gid=10001,mode=0700,size=32m", "--env", "MP_DATABASE=/data/mailpit.db", "--env", "MP_MAX_MESSAGES=25", "--log-driver", "local", "--log-opt", "max-size=1m", "--log-opt", "max-file=2", MAILPIT)
@@ -97,19 +97,21 @@ def check_identity(binary, directory, env, sql, command, validate_events, fixtur
                 return response.status, json.loads(raw) if raw else None
 
         def start():
-            child = subprocess.Popen([binary, "serve"], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
-            capture = {"lines": [], "bytes": 0, "overflow": False}
-            def drain():
-                for line in child.stdout:
-                    capture["bytes"] += len(line)
-                    if capture["bytes"] > log_budget:
-                        capture["overflow"] = True
-                        child.terminate()
-                        break
-                    capture["lines"].append(line)
-            reader = threading.Thread(target=drain, daemon=True)
-            captures[child.pid] = (capture, reader)
-            reader.start()
+            validator = validate_events.stream() if fixture_receipt is not None else None
+            try:
+                child = subprocess.Popen([binary, "serve"], env=env, stdout=validator.stdin if validator else subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+            except BaseException:
+                if validator is not None:
+                    validator.kill()
+                    validator.communicate(timeout=5)
+                raise
+            if validator is not None:
+                # Only the server owns the writer; its exit must deliver EOF.
+                validator.stdin.close()
+                validator.stdin = None
+                captures[child.pid] = (validator, None)
+            else:
+                capture_output(child)
             deadline = time.monotonic() + 8
             while time.monotonic() < deadline:
                 try:
@@ -123,6 +125,20 @@ def check_identity(binary, directory, env, sql, command, validate_events, fixtur
             stop(child)
             raise AssertionError("identity process did not become ready")
 
+        def capture_output(child):
+            capture = {"lines": [], "bytes": 0, "overflow": False}
+            def drain():
+                for line in child.stdout:
+                    capture["bytes"] += len(line)
+                    if capture["bytes"] > log_budget:
+                        capture["overflow"] = True
+                        child.terminate()
+                        break
+                    capture["lines"].append(line)
+            reader = threading.Thread(target=drain, daemon=True)
+            captures[child.pid] = (capture, reader)
+            reader.start()
+
         def stop(child):
             child.terminate()
             child.wait(timeout=25)
@@ -130,6 +146,9 @@ def check_identity(binary, directory, env, sql, command, validate_events, fixtur
             if saved is None:
                 return ""
             capture, reader = saved
+            if reader is None:
+                validate_events.finish_stream(capture)
+                return ""
             reader.join(timeout=2)
             assert not reader.is_alive() and not capture["overflow"], "bounded process log capture failed"
             return "".join(capture["lines"])
@@ -205,6 +224,8 @@ def check_identity(binary, directory, env, sql, command, validate_events, fixtur
                         receipt.write_text(json.dumps(state))
                     if server is not None and server.poll() is not None:
                         raise AssertionError("isolated identity server exited")
+                    if server is not None and captures[server.pid][0].poll() is not None:
+                        raise AssertionError("streamed telemetry validator exited before the server")
                     time.sleep(0.1)
             finally:
                 state["status"] = "stopped"
@@ -212,7 +233,6 @@ def check_identity(binary, directory, env, sql, command, validate_events, fixtur
                 if server is not None:
                     logs += stop(server)
                     server = None
-                validate_events(logs)
             return
         denied_status, denied_receipt = request("/v2/auth/email/challenges", {"email": unknown})
         otp_trace = secrets.token_hex(16)
