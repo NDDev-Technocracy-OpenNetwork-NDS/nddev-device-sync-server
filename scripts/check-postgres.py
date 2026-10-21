@@ -44,7 +44,9 @@ if options.fixture_receipt is not None:
 
 ROOT = Path(__file__).resolve().parent.parent
 IMAGE = "postgres:18.6-bookworm@sha256:afc7e2d441324c0388fa80c3d24f733b4194a4eb7f47dd8ee2b08eb1a24a647c"
-BINARY = Path(os.environ.get("CARGO_TARGET_DIR", ROOT / "target")) / "debug/nddev-device-sync-server"
+BINARY = Path(json.loads(subprocess.check_output(
+    ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"],
+    cwd=ROOT, text=True, timeout=30))["target_directory"]) / "debug/nddev-device-sync-server"
 name = "nds-db-check-" + uuid.uuid4().hex[:12]
 created = False
 server = None
