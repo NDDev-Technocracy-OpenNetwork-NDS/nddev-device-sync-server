@@ -22,3 +22,18 @@ class TelemetryValidator:
         result = subprocess.run([str(self.python), str(self.root / "scripts/validate-events.py")], input=logs, text=True, capture_output=True, timeout=30)
         assert result.returncode == 0, result.stdout + result.stderr
         print(result.stdout.strip())
+
+    def stream(self):
+        # The canonical validator reads bounded NDJSON records. A fixture may
+        # outlive an in-memory transcript; the OS pipe supplies backpressure.
+        return subprocess.Popen([str(self.python), str(self.root / "scripts/validate-events.py")], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+    def finish_stream(self, process):
+        try:
+            output, _ = process.communicate(timeout=30)
+        except subprocess.TimeoutExpired:
+            process.kill()
+            process.communicate(timeout=5)
+            raise AssertionError("streamed telemetry validation timed out") from None
+        assert process.returncode == 0, output
+        print(output.strip())
