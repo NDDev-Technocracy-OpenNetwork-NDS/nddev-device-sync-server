@@ -126,3 +126,5 @@ Client catalog acceptance uses `--fixture-sync3` with `--fixture-receipt`.
 The fixture operator explicitly admits current writes only after the client
 creates its empty owner counter. Migration defaults and existing histories are
 unchanged; the real client must negotiate the admitted format.
+
+Release journals live in [GitHub Releases](https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-server/releases).

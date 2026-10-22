@@ -1,0 +1,78 @@
+name: main-ci
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: main-validation
+  cancel-in-progress: false
+
+jobs:
+  contract:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
+        with:
+          bun-version-file: package.json
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
+      - name: Install pinned quality tools
+        run: |
+          cargo install --locked --version 0.9.148 cargo-nextest
+          cargo install --locked --version 0.22.2 cargo-audit
+          cargo install --locked --version 0.20.2 cargo-deny
+      - name: Run the STD-0004 native Rust contract
+        id: native
+        uses: NDDev-Technocracy-Standarts/std-0004-ci-cd-workflows/.github/actions/ci@a77e385fcf3c1b000c38167ecac7b74bb7715b10 # std-0004-v0.3.1
+      - name: Require complete native results
+        if: ${{ !cancelled() }}
+        env:
+          STATUS: ${{ steps.native.outputs.status }}
+        run: test "$STATUS" = success
+
+  integration:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+      - uses: extractions/setup-just@53165ef7e734c5c07cb06b3c8e7b647c5aa16db3
+        with:
+          just-version: '1.59.0'
+      - name: Install pinned Rust toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
+      - name: Verify PostgreSQL and SMTP identity acceptance
+        run: just integration-postgres
+      - name: Build and exercise the actual server container
+        shell: bash
+        run: |
+          docker build --build-arg "NDS_SOURCE_COMMIT=$GITHUB_SHA" --tag nds-server-check .
+          trap 'docker rm --force nds-server-check >/dev/null 2>&1 || true' EXIT
+          docker run --detach --name nds-server-check --read-only --network none \
+            --cap-drop ALL --security-opt no-new-privileges:true --memory 128m \
+            --pids-limit 64 nds-server-check
+          for _ in {1..30}; do
+            if docker exec nds-server-check curl --fail --silent --max-time 1 \
+              http://127.0.0.1:8080/v1/health > "$RUNNER_TEMP/nds-container-health.json"; then
+              break
+            fi
+            sleep 0.2
+          done
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          health = json.loads((Path(os.environ['RUNNER_TEMP']) / 'nds-container-health.json').read_text())
+          assert health['status'] == 'ok'
+          assert health['source_commit'] == os.environ['GITHUB_SHA']
+          assert health['database_configured'] is False
+          PY
