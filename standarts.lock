@@ -1,4 +1,4 @@
 source_repo = "NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync"
-source_release = "unreleased"
-source_commit = "35bbc79ce03c21a00717dec533119cf4f6ad32ef"
+source_release = "v0.0.1-alpha.10"
+source_commit = "5f9fc77dc0b72519f9fae74b1d2a12a14c02e4bb"
 license = "AGPL-3.0-only"

@@ -1,0 +1,45 @@
+schema = 1
+profiles = ["rust", "typescript-javascript"]
+
+[tools.rust]
+command = ["rustc", "--version"]
+pattern = "^rustc 1[.]99[.]1"
+
+[commands.rust]
+lint = ["cargo", "clippy", "--locked", "--workspace", "--all-targets", "--jobs", "4", "--", "-D", "warnings"]
+test = ["cargo", "nextest", "run", "--locked", "--workspace", "--jobs", "4", "--profile", "ci"]
+doctest = ["cargo", "test", "--locked", "--workspace", "--doc", "--jobs", "4"]
+build = ["cargo", "build", "--locked", "--workspace", "--release", "--jobs", "4"]
+policy = ["cargo", "deny", "--locked", "check", "licenses", "sources"]
+
+[commands.typescript-javascript]
+toolchain = ["bun", "--version"]
+format = ["bun", "x", "biome", "format", "src/passkeys"]
+lint = ["bun", "run", "check"]
+type = ["bun", "x", "tsc", "--noEmit"]
+test = ["bun", "test", "--reporter=junit", "--reporter-outfile=.nddev-reports/bun-test.xml"]
+build = ["bun", "run", "check:generated"]
+
+[not_applicable.typescript-javascript]
+package = "Private browser passkey I/O library; it is consumed in-tree and never published"
+
+[reports.rust]
+kind = "junit"
+path = ".nddev-reports/nextest/ci/junit.xml"
+
+[reports.typescript-javascript]
+kind = "junit"
+path = ".nddev-reports/bun-test.xml"
+
+[timeouts]
+rust = 900
+
+[extras.advisories]
+purpose = "Check the locked dependencies against current RustSec advisories"
+command = ["cargo", "audit", "--deny", "warnings"]
+timeout = 600
+
+[extras.protocol-check]
+purpose = "Consumed DTOs match the pinned immutable protocol source"
+command = ["python3", "scripts/check-protocol.py"]
+timeout = 300
