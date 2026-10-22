@@ -1,1 +1,6 @@
+* text=auto eol=lf
+
+.nds/generated.json linguist-generated
+CLAUDE.md linguist-generated
+
 src/passkeys/browser.js linguist-generated=true

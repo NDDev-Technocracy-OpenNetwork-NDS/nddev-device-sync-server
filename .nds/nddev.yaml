@@ -1,0 +1,59 @@
+# std-0001 repository manifest — schema: `nddev schema manifest`.
+apiVersion: nddev.ai/v1alpha3
+kind: Repository
+metadata:
+  id: nddev-device-sync-server
+  locator: github:NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-server
+  owner: rldyourmnd
+spec:
+  standard:
+    id: std-0001
+    version: 3.0.0
+  role: component
+  profiles:
+  - rust
+  - typescript
+  system:
+    id: nds
+    root: github:NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync
+  portfolios:
+  - portfolio:nddev-opennetwork
+  consumes:
+  - contract: nddev-device-sync-protocol/protocol
+    via: Cargo.toml
+  - contract: nddev-device-sync-core/domain
+    via: Cargo.toml
+  - contract: nddev-device-sync-core/application
+    via: Cargo.toml
+  - contract: nddev-device-sync-observability/telemetry
+    via: Cargo.toml
+  variations:
+  - paths: [.gds]
+    purpose: config
+    reason: GDS-owned repository anchor and policy projections; std-0001 excludes .gds by its own boundary rule.
+    decision: {state: approved, by: rldyourmnd, date: "2026-10-22", origin: document, reference: standarts/decisions/0013-estate-hygiene-and-standards-adoption.md}
+  - paths: [module.yaml]
+    purpose: manifest
+    reason: NDS module descriptor owned by the product standards corpus.
+    decision: {state: approved, by: rldyourmnd, date: "2026-10-22", origin: document, reference: standarts/decisions/0013-estate-hygiene-and-standards-adoption.md}
+  - paths: [standarts.lock]
+    purpose: lock
+    reason: NDS contract lock pinning the standards source.
+    decision: {state: approved, by: rldyourmnd, date: "2026-10-22", origin: document, reference: standarts/decisions/0013-estate-hygiene-and-standards-adoption.md}
+  - paths: [scripts]
+    purpose: tool-config
+    reason: Native protocol drift and PostgreSQL acceptance checks owned by the repository.
+    decision: {state: approved, by: rldyourmnd, date: "2026-10-22", origin: document, reference: standarts/decisions/0013-estate-hygiene-and-standards-adoption.md}
+  - paths: [docs]
+    purpose: docs
+    reason: Self-hosting and development documentation owned by the repository.
+    decision: {state: approved, by: rldyourmnd, date: "2026-10-22", origin: document, reference: standarts/decisions/0013-estate-hygiene-and-standards-adoption.md}
+  - paths: [migrations, deploy, compose.yaml, compose.identity.yaml, Dockerfile]
+    purpose: infrastructure
+    reason: Ordered PostgreSQL migrations, self-hostable compose surfaces and the server image owned by the repository.
+    decision: {state: approved, by: rldyourmnd, date: "2026-10-22", origin: document, reference: standarts/decisions/0013-estate-hygiene-and-standards-adoption.md}
+  modules:
+  - .
+  adapters:
+  - claude
+  - cursor
