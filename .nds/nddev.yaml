@@ -36,6 +36,10 @@ spec:
     purpose: manifest
     reason: NDS module descriptor owned by the product standards corpus.
     decision: {state: approved, by: rldyourmnd, date: "2026-10-22", origin: document, reference: standarts/decisions/0013-estate-hygiene-and-standards-adoption.md}
+  - paths: [.config]
+    purpose: tool-config
+    reason: Pinned nextest CI profile configuration owned by the repository.
+    decision: {state: approved, by: rldyourmnd, date: "2026-10-22", origin: document, reference: standarts/decisions/0013-estate-hygiene-and-standards-adoption.md}
   - paths: [standarts.lock]
     purpose: lock
     reason: NDS contract lock pinning the standards source.

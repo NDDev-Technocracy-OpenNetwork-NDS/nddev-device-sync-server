@@ -1,3 +1,7 @@
+# Locked-graph advisory policy.
+[advisories]
+yanked = "deny"
+
 # Reviewed licenses in the locked dependency graph; the product remains AGPL-only.
 [licenses]
 allow = [
