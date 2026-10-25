@@ -34,8 +34,8 @@ if options.fixture_tls and options.fixture_receipt is None:
     arguments.error("TLS browser acceptance requires an owned fixture")
 if options.fixture_sync3 and options.fixture_receipt is None:
     arguments.error("sync admission requires an owned client fixture")
-if not 60 <= options.fixture_seconds <= 3600:
-    arguments.error("fixture lifetime must be 60..3600 seconds")
+if not 60 <= options.fixture_seconds <= 14400:
+    arguments.error("fixture lifetime must be 60..14400 seconds")
 if options.fixture_receipt is not None:
     repository = Path(__file__).resolve().parent.parent
     receipt = options.fixture_receipt.resolve()
