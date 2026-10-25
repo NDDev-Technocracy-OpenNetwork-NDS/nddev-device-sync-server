@@ -92,9 +92,13 @@ try:
             path.write_text(password)
             path.chmod(0o444)  # Ephemeral parent is private; postgres UID reads bind-mounted file.
             mounts.extend(["--mount", f"type=bind,src={path},dst=/run/secrets/{path.name},readonly"])
+        # A private checkout umask can make the source unreadable to the container UID.
+        init_script = directory / "postgres-init.sh"
+        init_script.write_bytes((ROOT / "deploy/postgres-init.sh").read_bytes())
+        init_script.chmod(0o555)
         # Actual retained-byte saturation needs log bodies plus PostgreSQL WAL;
         # this disposable fixture stays bounded independently of product limits.
-        command("docker", "run", "--rm", "--detach", "--name", name, "--user", "postgres", "--read-only", "--cap-drop=ALL", "--security-opt", "no-new-privileges:true", "--memory", "768m", "--cpus", "1", "--pids-limit", "128", "--publish", "127.0.0.1::5432", "--tmpfs", "/var/lib/postgresql:uid=999,gid=999,mode=0700,size=512m", "--tmpfs", "/var/run/postgresql:uid=999,gid=999,mode=3775,size=16m", "--tmpfs", "/tmp:uid=999,gid=999,mode=1777,size=16m", "--env", "POSTGRES_DB=nds", "--env", "POSTGRES_PASSWORD_FILE=/run/secrets/postgres_admin_password", *mounts, "--mount", f"type=bind,src={ROOT / 'deploy/postgres-init.sh'},dst=/docker-entrypoint-initdb.d/10-nds-roles.sh,readonly", IMAGE)
+        command("docker", "run", "--rm", "--detach", "--name", name, "--user", "postgres", "--read-only", "--cap-drop=ALL", "--security-opt", "no-new-privileges:true", "--memory", "768m", "--cpus", "1", "--pids-limit", "128", "--publish", "127.0.0.1::5432", "--tmpfs", "/var/lib/postgresql:uid=999,gid=999,mode=0700,size=512m", "--tmpfs", "/var/run/postgresql:uid=999,gid=999,mode=3775,size=16m", "--tmpfs", "/tmp:uid=999,gid=999,mode=1777,size=16m", "--env", "POSTGRES_DB=nds", "--env", "POSTGRES_PASSWORD_FILE=/run/secrets/postgres_admin_password", *mounts, "--mount", f"type=bind,src={init_script},dst=/docker-entrypoint-initdb.d/10-nds-roles.sh,readonly", IMAGE)
         created = True
         host_port = json.loads(command("docker", "inspect", name))[0]["NetworkSettings"]["Ports"]["5432/tcp"][0]["HostPort"]
         for _ in range(100):
