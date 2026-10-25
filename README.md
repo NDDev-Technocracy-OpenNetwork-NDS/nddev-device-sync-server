@@ -123,6 +123,9 @@ exact fixture certificate independently; no system trust or live certificate
 is changed. This option is confined to the acceptance harness.
 
 Client catalog acceptance uses `--fixture-sync3` with `--fixture-receipt`.
+The fixture defaults to 1200 seconds; `--fixture-seconds` explicitly bounds its
+lifetime up to 14400 seconds for complete native fleets. Request deadlines,
+device/entity quotas and replay admission retain their production values.
 The fixture operator explicitly admits current writes only after the client
 creates its empty owner counter. Migration defaults and existing histories are
 unchanged; the real client must negotiate the admitted format.
