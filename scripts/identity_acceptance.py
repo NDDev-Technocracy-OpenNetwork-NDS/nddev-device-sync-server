@@ -3,6 +3,7 @@ import base64
 import hashlib
 from concurrent.futures import ThreadPoolExecutor
 import json
+import os
 from pathlib import Path
 import re
 import secrets
@@ -21,6 +22,20 @@ from browser_acceptance import check_browser
 from company_identity_acceptance import check_company_identity
 
 MAILPIT = "axllent/mailpit:v1.31.4@sha256:b68349e3a014b90c5610bfb26b2ae36f3892d7b8cf25ee140c6c71c98d2fcf48"
+
+
+def publish_fixture_receipt(path, state, *, initial=False):
+    pending = path.with_suffix(".pending")
+    descriptor = os.open(pending, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+    try:
+        with os.fdopen(descriptor, "w") as handle:
+            json.dump(state, handle)
+        if initial:
+            os.link(pending, path)  # Publish without overwriting an existing receipt.
+        else:
+            pending.replace(path)
+    finally:
+        pending.unlink(missing_ok=True)
 
 
 def check_identity(binary, directory, env, sql, command, validate_events, fixture_receipt=None, fixture_seconds=1200, fixture_passkeys=False, fixture_tls=False, fixture_sync3=False):
@@ -189,9 +204,7 @@ def check_identity(binary, directory, env, sql, command, validate_events, fixtur
             control = receipt.with_suffix(".control.json")
             state = {"base_url": origin, "mailpit_url": mail_url, "owner_email": owner, "expires_at_unix": int(time.time()) + fixture_seconds, "stop_marker": str(stop_marker), "control_file": str(control), "status": "running"}
             state.update(tls_evidence)
-            with receipt.open("x") as handle:
-                json.dump(state, handle)
-            receipt.chmod(0o600)
+            publish_fixture_receipt(receipt, state, initial=True)
             print("Isolated identity fixture ready; receipt saved outside the repository.", flush=True)
             deadline = time.monotonic() + fixture_seconds
             try:
@@ -206,7 +219,7 @@ def check_identity(binary, directory, env, sql, command, validate_events, fixtur
                         assert changed in {"0", "1"}
                         if changed == "1":
                             state["new_operation_version"] = 3
-                            receipt.write_text(json.dumps(state))
+                            publish_fixture_receipt(receipt, state)
                     # The test harness owns this exact child and its temporary
                     # dependencies. Broken connections and restarts are real I/O
                     # failures; no test bypass enters the product server.
@@ -221,7 +234,7 @@ def check_identity(binary, directory, env, sql, command, validate_events, fixtur
                         elif desired["mode"] == "online" and server is None:
                             server = start()
                         state["status"] = "running" if server is not None else "offline"
-                        receipt.write_text(json.dumps(state))
+                        publish_fixture_receipt(receipt, state)
                     if server is not None and server.poll() is not None:
                         raise AssertionError("isolated identity server exited")
                     if server is not None and captures[server.pid][0].poll() is not None:
@@ -229,7 +242,7 @@ def check_identity(binary, directory, env, sql, command, validate_events, fixtur
                     time.sleep(0.1)
             finally:
                 state["status"] = "stopped"
-                receipt.write_text(json.dumps(state))
+                publish_fixture_receipt(receipt, state)
                 if server is not None:
                     logs += stop(server)
                     server = None
