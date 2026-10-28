@@ -70,6 +70,7 @@ def check_enrollment(request, token, second_session, restart, directory, sql):
 
     path, public = key()
     assert request("/v2/devices")[0] == 401
+    assert request("/v3/personal/devices")[0] == 401
     assert challenge(public, session=None)[0] == 401
     for invalid in [encoded(bytes(32)), encoded(b"\x01" + bytes(31)), encoded(bytes([0xee]) + bytes([0xff])*30 + b"\x7f"), public + "=", encoded(bytes(31))]:
         assert challenge(invalid)[0] == 400
@@ -91,6 +92,14 @@ def check_enrollment(request, token, second_session, restart, directory, sql):
     assert request("/v2/devices/enrollments", valid, token=token)[0] == 400
     restart()
     assert request("/v2/devices", token=token) == (200, {"devices":[first], "next_cursor":None})
+    status, session = request("/v2/session", token=token)
+    assert status == 200
+    context = {"principal_id": session["user_id"], "space": {"kind": "personal", "id": session["user_id"]}}
+    retained_device = sql("SELECT to_jsonb(d)::text FROM nds_devices d ORDER BY device_id").stdout
+    assert request("/v3/personal/devices", token=token) == (200, {"context": context, "devices": [first], "next_cursor": None})
+    for query in ("limit=0", "cursor=devices.01", "user_id=" + str(uuid.uuid4()), "space_id=" + session["tenant_id"]):
+        assert request("/v3/personal/devices?" + query, token=token)[0] == 400
+    assert sql("SELECT to_jsonb(d)::text FROM nds_devices d ORDER BY device_id").stdout == retained_device, "personal projection changed retained device ownership or proof"
     assert request("/v2/devices?limit=0", token=token)[0] == 400
     assert request("/v2/devices?cursor=devices.01", token=token)[0] == 400
     assert challenge(public)[0] == 400, "active key was registered twice"
@@ -192,8 +201,10 @@ def check_enrollment(request, token, second_session, restart, directory, sql):
     seen = set()
     cursor = None
     for page_number in range(4):
-        status,page = request("/v2/devices?limit=100" + ("&cursor="+cursor if cursor else ""),token=token)
+        query = "?limit=100" + ("&cursor="+cursor if cursor else "")
+        status,page = request("/v2/devices" + query,token=token)
         assert status == 200 and len(page["devices"]) == 32
+        assert request("/v3/personal/devices" + query, token=token) == (200, {"context": context, **page})
         for device in page["devices"]:
             assert device["device_id"] not in seen and device["status"] == "revoked"
             seen.add(device["device_id"])

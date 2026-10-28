@@ -13,7 +13,7 @@ COMMIT = matches[0]
 
 
 def source(name):
-    local = ROOT.parent / "nddev-device-sync-protocol"
+    local = Path(os.environ.get("NDS_PROTOCOL_SOURCE", str(ROOT.parent / "nddev-device-sync-protocol")))
     if local.is_dir():
         result = subprocess.run(["git", "-C", str(local), "show", f"{COMMIT}:{name}"], capture_output=True, env=os.environ | {"GIT_OPTIONAL_LOCKS": "0"}, timeout=10)
         if result.returncode == 0:

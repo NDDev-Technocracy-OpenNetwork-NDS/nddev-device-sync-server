@@ -10,7 +10,7 @@ build = "build.rs"
 [dependencies]
 prost = "0.14"
 opentelemetry-proto = { version = "0.33.1", default-features = false, features = ["gen-tonic-messages", "trace"] }
-nddev-device-sync-http-signatures = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-protocol.git", rev = "aebfb85be45569f6724840a99ac7d7d7877f808d" }
+nddev-device-sync-http-signatures = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-protocol.git", rev = "78314fc5ef9f052e4352879055035719a18c2071" }
 axum = "0.8.9"
 axum-server = { version = "0.8", default-features = false, features = ["tls-rustls-no-provider"] }
 base64 = "0.23.1"
@@ -18,8 +18,8 @@ zeroize = "1.8"
 webauthn-rs = { version = "=0.5.5", default-features = false }
 libc = "0.2"
 hyper-util = { version = "0.1", default-features = false, features = ["tokio"] }
-nddev-device-sync-domain = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git", rev = "b3387ee9ce35b9fe2fa9db57777e48902f0fbdbb" }
-nddev-device-sync-application = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git", rev = "b3387ee9ce35b9fe2fa9db57777e48902f0fbdbb" }
+nddev-device-sync-domain = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git", rev = "744dd81729e85928afa0424cb5f741bec26cf9ec" }
+nddev-device-sync-application = { git = "https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git", rev = "744dd81729e85928afa0424cb5f741bec26cf9ec" }
 lettre = { version = "0.11.23", default-features = false, features = ["smtp-transport", "builder", "tokio1-rustls-tls"] }
 reqwest = { version = "0.13.3", default-features = false, features = ["rustls-no-provider", "form", "json"] }
 ring = "0.17"
