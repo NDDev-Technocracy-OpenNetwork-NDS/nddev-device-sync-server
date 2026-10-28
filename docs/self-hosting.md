@@ -197,6 +197,13 @@ GET `/v2/devices` returns owned devices including revoked ones and an opaque
 cursor. The requested limit is 1–100; each response contains at most 32 items
 to bound encoded size even for maximal Unicode names. DELETE
 `/v2/devices/{device_id}` is idempotent for an owned device and retains its row.
+New clients use GET `/v3/personal/devices` with the same pagination. Its response
+also identifies the authenticated principal and that user's personal space.
+This read projection preserves the original device IDs, keys and storage owner;
+an organization administrator still receives only their own personal devices.
+Upgrade the server before these clients: absence of the new route is an explicit
+compatibility refusal, with no context-free inventory fallback. Previously
+locked clients retain `/v2/devices` unchanged.
 If a completion response is uncertain, retain the local key and inspect the
 owned device list. Enrollment establishes device identity. Subsequent encrypted
 sync and vault-key delivery require both an active owner session and signed,

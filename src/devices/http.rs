@@ -1,3 +1,4 @@
+use crate::protocol_personal as personal_dto;
 use crate::{AppState, admission::PeerAddress, identity, protocol_devices as dto};
 use axum::{
     Json, Router,
@@ -18,6 +19,7 @@ pub fn routes() -> Router<AppState> {
         .route("/v2/devices/challenges", post(request))
         .route("/v2/devices/enrollments", post(complete))
         .route("/v2/devices", get(list))
+        .route("/v3/personal/devices", get(list_personal))
         .route("/v2/devices/{device_id}", delete(revoke))
 }
 pub struct ApiError(DeviceError);
@@ -179,13 +181,13 @@ struct Page {
     cursor: Option<String>,
     limit: Option<usize>,
 }
-async fn list(
-    State(state): State<AppState>,
-    headers: HeaderMap,
+async fn inventory(
+    state: &AppState,
+    headers: &HeaderMap,
     page: Result<Query<Page>, QueryRejection>,
-) -> Result<Json<dto::DeviceList>, ApiError> {
+) -> Result<PersonalDevicePage, ApiError> {
     let now = now()?;
-    let authorization = authorization(&state, &headers, now).await?;
+    let authorization = authorization(state, headers, now).await?;
     let Query(page) = page.map_err(|_| DeviceError::InvalidInput)?;
     let after = match page.cursor {
         None => 0,
@@ -201,9 +203,17 @@ async fn list(
             value
         }
     };
-    let page = service(&state)?
-        .list(&authorization, after, page.limit.unwrap_or(50), now)
-        .await?;
+    Ok(service(state)?
+        .list_personal(&authorization, after, page.limit.unwrap_or(50), now)
+        .await?)
+}
+
+async fn list(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    page: Result<Query<Page>, QueryRejection>,
+) -> Result<Json<dto::DeviceList>, ApiError> {
+    let page = inventory(&state, &headers, page).await?.page;
     Ok(Json(dto::DeviceList {
         devices: page
             .devices
@@ -211,6 +221,54 @@ async fn list(
             .map(device)
             .collect::<Result<_, _>>()?,
         next_cursor: page.next_after.map(|after| format!("devices.{after}")),
+    }))
+}
+
+async fn list_personal(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    query: Result<Query<Page>, QueryRejection>,
+) -> Result<Json<personal_dto::PersonalDeviceList>, ApiError> {
+    let scoped = inventory(&state, &headers, query).await?;
+    let context = personal_dto::PersonalContext {
+        principal_id: scoped.context.principal_id().as_str().into(),
+        space: personal_dto::PersonalSpace {
+            kind: personal_dto::Kind::Personal,
+            id: scoped.context.space_id().as_str().into(),
+        },
+    };
+    Ok(Json(personal_dto::PersonalDeviceList {
+        context,
+        devices: scoped
+            .page
+            .devices
+            .into_iter()
+            .map(|value| {
+                let value = device(value)?;
+                Ok(personal_dto::Device {
+                    created_at: value.created_at,
+                    device_id: value.device_id,
+                    display_name: value.display_name,
+                    public_key: value.public_key,
+                    platform: match value.platform {
+                        dto::Platform::Android => personal_dto::Platform::Android,
+                        dto::Platform::Web => personal_dto::Platform::Web,
+                        dto::Platform::Ios => personal_dto::Platform::Ios,
+                        dto::Platform::Linux => personal_dto::Platform::Linux,
+                        dto::Platform::Macos => personal_dto::Platform::Macos,
+                        dto::Platform::Windows => personal_dto::Platform::Windows,
+                    },
+                    status: match value.status {
+                        dto::Status::Active => personal_dto::Status::Active,
+                        dto::Status::Revoked => personal_dto::Status::Revoked,
+                    },
+                })
+            })
+            .collect::<Result<_, DeviceError>>()?,
+        next_cursor: scoped
+            .page
+            .next_after
+            .map(|after| format!("devices.{after}")),
     }))
 }
 async fn revoke(
