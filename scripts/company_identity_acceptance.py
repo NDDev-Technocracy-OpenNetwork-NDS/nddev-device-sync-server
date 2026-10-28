@@ -210,9 +210,15 @@ def check_company_identity(request, sql, mailbox, http, pepper, restart, directo
 
     peers = [enroll(token) for token in (member_token, admin_token, foreign_token)]
     materials = []
-    for peer, token in zip(peers, (member_token, admin_token, foreign_token), strict=True):
+    for peer, token, principal in zip(peers, (member_token, admin_token, foreign_token), (user, admin_user, foreign_user), strict=True):
         status, own = request("/v2/devices", token=token)
         assert status == 200 and [item["device_id"] for item in own["devices"]] == [peer[1]]
+        retained_devices = sql("SELECT to_jsonb(d)::text FROM nds_devices d ORDER BY device_id").stdout
+        assert request("/v3/personal/devices", token=token) == (200, {
+            "context": {"principal_id": principal, "space": {"kind": "personal", "id": principal}}, **own,
+        })
+        assert request("/v3/personal/devices?user_id=" + (admin_user if principal == user else user), token=token)[0] == 400
+        assert sql("SELECT to_jsonb(d)::text FROM nds_devices d ORDER BY device_id").stdout == retained_devices
         status, key = signed(peer, token, "/v2/vault/key", {"existing_key": None})
         assert status == 200
         materials.append(key["key_material"])
@@ -230,6 +236,7 @@ def check_company_identity(request, sql, mailbox, http, pepper, restart, directo
     sql(f"UPDATE nds_owner SET membership_active=FALSE WHERE user_id={literal(user)}")
     assert request("/v2/auth/email/verify", proof)[0] == 401
     assert request("/v2/session", token=member_token)[0] == 401
+    assert request("/v3/personal/devices", token=member_token)[0] == 401
     assert signed(peers[0], member_token, "/v2/vault/key", {"existing_key": None})[0] == 401
     reset_cases()
     returning_invite = pending(email=email, user=user)[3]
