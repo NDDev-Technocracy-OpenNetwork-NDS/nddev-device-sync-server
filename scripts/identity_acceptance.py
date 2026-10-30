@@ -38,7 +38,7 @@ def publish_fixture_receipt(path, state, *, initial=False):
         pending.unlink(missing_ok=True)
 
 
-def check_identity(binary, directory, env, sql, command, validate_events, fixture_receipt=None, fixture_seconds=1200, fixture_passkeys=False, fixture_tls=False, fixture_sync3=False):
+def check_identity(binary, directory, env, sql, command, validate_events, fixture_receipt=None, fixture_seconds=1200, fixture_passkeys=False, fixture_tls=False, fixture_sync3=False, fixture_database=None):
     mailbox = "nds-mail-check-" + uuid.uuid4().hex[:12]
     server = None
     created = False
@@ -203,6 +203,9 @@ def check_identity(binary, directory, env, sql, command, validate_events, fixtur
             stop_marker = receipt.with_suffix(".stop")
             control = receipt.with_suffix(".control.json")
             state = {"base_url": origin, "mailpit_url": mail_url, "owner_email": owner, "expires_at_unix": int(time.time()) + fixture_seconds, "stop_marker": str(stop_marker), "control_file": str(control), "status": "running"}
+            if fixture_database is not None:
+                assert fixture_database.startswith("nds-db-check-") and fixture_database[13:].isalnum()
+                state["database_container"] = fixture_database
             state.update(tls_evidence)
             publish_fixture_receipt(receipt, state, initial=True)
             print("Isolated identity fixture ready; receipt saved outside the repository.", flush=True)

@@ -28,6 +28,9 @@ pub fn member(value: &Member) -> Result<dto::CompanyMember, OrganizationError> {
     })
 }
 pub fn overview(value: &Overview) -> Result<dto::CompanyOverview, OrganizationError> {
+    if value.company.id != value.member.membership.company_id {
+        return Err(OrganizationError::Unavailable);
+    }
     Ok(dto::CompanyOverview {
         company: dto::Company {
             company_id: value.company.id.as_str().into(),

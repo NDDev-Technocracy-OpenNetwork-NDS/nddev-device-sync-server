@@ -72,17 +72,20 @@ def check_company_identity(request, sql, mailbox, http, pepper, restart, directo
         sensitive.append(issued["session_token"])
         return issued["session_token"]
 
-    def pending(role="user", email=None, user=None, tenant=None):
+    def pending(role="user", email=None, user=None, tenant=None, issuer=None):
         email = email or uuid.uuid4().hex + "@example.invalid"
         user = user or str(uuid.uuid4())
         tenant = tenant or bootstrap["tenant_id"]
+        issuer = issuer or bootstrap["user_id"]
+        issuer_tenant = sql(f"SELECT tenant_id FROM nds_owner WHERE user_id={literal(issuer)}").stdout.strip()
+        recipient_tenant = sql(f"SELECT tenant_id FROM nds_owner WHERE user_id={literal(user)}").stdout.strip() or tenant
         identifier, token = encode(secrets.token_bytes(32)), encode(secrets.token_bytes(32))
         sensitive.extend([email, token])
         now = int(time.time() * 1000)
-        sql("INSERT INTO nds_company_invitations(invitation_id,tenant_id,issuer_user_id,recipient_user_id,recipient_email,recipient_binding,recipient_subject,company_role,verifier,issued_at_ms,expires_at_ms,status) VALUES("
-            + ",".join([literal(identifier), literal(tenant), literal(bootstrap["user_id"]), literal(user),
+        sql("INSERT INTO nds_company_invitations(invitation_id,tenant_id,issuer_user_id,recipient_user_id,recipient_email,recipient_binding,recipient_subject,company_role,verifier,issued_at_ms,expires_at_ms,status,issuer_tenant_id,recipient_tenant_id) VALUES("
+            + ",".join([literal(identifier), literal(tenant), literal(issuer), literal(user),
                         literal(email), binary(protect("owner_binding", email)), binary(protect("email_subject", email)),
-                        literal(role), binary(protect("company_invitation", identifier, token)), str(now), str(now + 604800000), "'pending'"]) + ")")
+                        literal(role), binary(protect("company_invitation", identifier, token)), str(now), str(now + 604800000), "'pending'", literal(issuer_tenant), literal(recipient_tenant)]) + ")")
         return email, user, tenant, {"invitation_id": identifier, "invitation_token": token}
 
     def unavailable(email, invite):
@@ -109,7 +112,7 @@ def check_company_identity(request, sql, mailbox, http, pepper, restart, directo
     member_token = issued["session_token"]
     sensitive.append(member_token)
     assert sql(f"SELECT status FROM nds_company_invitations WHERE invitation_id={literal(invite['invitation_id'])}").stdout.strip() == "accepted"
-    assert sql(f"SELECT company_role||':'||membership_active::text FROM nds_owner WHERE user_id={literal(user)}").stdout.strip() == "user:true"
+    assert sql(f"SELECT company_role||':'||membership_active::text FROM nds_company_memberships WHERE user_id={literal(user)} AND tenant_id={literal(tenant)}").stdout.strip() == "user:true"
     unavailable(email, invite)
 
     # All three decisions are rechecked after actual recipient authentication
@@ -120,7 +123,7 @@ def check_company_identity(request, sql, mailbox, http, pepper, restart, directo
         proof = challenge(recipient, claim)
         identifier = literal(claim["invitation_id"])
         if failure == "issuer_demoted":
-            sql("UPDATE nds_owner SET company_role='user' WHERE is_bootstrap")
+            sql("UPDATE nds_company_memberships SET company_role='user' WHERE user_id IN(SELECT user_id FROM nds_owner WHERE is_bootstrap)")
         elif failure == "revoked":
             sql(f"UPDATE nds_company_invitations SET status='revoked' WHERE invitation_id={identifier}")
         else:
@@ -131,7 +134,7 @@ def check_company_identity(request, sql, mailbox, http, pepper, restart, directo
             if failure != "issuer_demoted":
                 assert sql(f"SELECT status FROM nds_company_invitations WHERE invitation_id={identifier}").stdout.strip() == failure
         finally:
-            sql("UPDATE nds_owner SET company_role='admin' WHERE is_bootstrap")
+            sql("UPDATE nds_company_memberships SET company_role='admin' WHERE user_id IN(SELECT user_id FROM nds_owner WHERE is_bootstrap)")
 
     reset_cases()
     admin_email, admin_user, _, admin_invite = pending("admin")
@@ -140,11 +143,18 @@ def check_company_identity(request, sql, mailbox, http, pepper, restart, directo
     foreign_email = uuid.uuid4().hex + "@example.invalid"
     sensitive.append(foreign_email)
     sql(f"INSERT INTO nds_companies(tenant_id,display_name) VALUES({literal(foreign_tenant)},'Foreign fixture');"
-        f"INSERT INTO nds_owner(user_id,tenant_id,email_binding,email,company_role) VALUES({literal(foreign_user)},{literal(foreign_tenant)},{binary(protect('owner_binding', foreign_email))},{literal(foreign_email)},'admin')")
+        f"INSERT INTO nds_owner(user_id,tenant_id,email_binding,email,verified) VALUES({literal(foreign_user)},{literal(foreign_tenant)},{binary(protect('owner_binding', foreign_email))},{literal(foreign_email)},TRUE);"
+        f"INSERT INTO nds_company_memberships(tenant_id,user_id,company_role,membership_active,member_revision) VALUES({literal(foreign_tenant)},{literal(foreign_user)},'admin',TRUE,1)")
     foreign_token = verify(challenge(foreign_email), foreign_user, foreign_tenant)
-    cross_invite = pending(email=foreign_email, user=foreign_user)[3]
-    unavailable(foreign_email, cross_invite)
-    assert sql(f"SELECT tenant_id FROM nds_owner WHERE user_id={literal(foreign_user)}").stdout.strip() == foreign_tenant
+    # A verified principal joins a second organization without changing its
+    # original personal tenant, session, keys or another membership's role.
+    reset_cases()
+    cross_invite = pending(email=email, user=user, tenant=foreign_tenant, issuer=foreign_user)[3]
+    cross_token = verify(challenge(email, cross_invite), user, tenant)
+    assert request("/v2/session", token=member_token)[0] == 200
+    assert request("/v2/session", token=cross_token)[0] == 200
+    assert sql(f"SELECT tenant_id FROM nds_owner WHERE user_id={literal(user)}").stdout.strip() == tenant
+    assert sql(f"SELECT tenant_id||':'||company_role FROM nds_company_memberships WHERE user_id={literal(user)} AND membership_active ORDER BY tenant_id").stdout.splitlines() == [value+":user" for value in sorted((tenant,foreign_tenant))]
 
     # Synthetic unused rows fill only the tested account's capacity. Every
     # exercised session still comes from actual SMTP/OTP verification above.
@@ -233,20 +243,23 @@ def check_company_identity(request, sql, mailbox, http, pepper, restart, directo
         assert request("/v2/session", token=token)[0] == 200
     reset_cases()
     proof = challenge(email)
-    sql(f"UPDATE nds_owner SET membership_active=FALSE WHERE user_id={literal(user)}")
-    assert request("/v2/auth/email/verify", proof)[0] == 401
-    assert request("/v2/session", token=member_token)[0] == 401
-    assert request("/v3/personal/devices", token=member_token)[0] == 401
-    assert signed(peers[0], member_token, "/v2/vault/key", {"existing_key": None})[0] == 401
+    sql(f"UPDATE nds_company_memberships SET membership_active=FALSE,member_revision=member_revision+1 WHERE user_id={literal(user)} AND tenant_id={literal(tenant)}")
+    assert request("/v2/auth/email/verify", proof)[0] == 200
+    assert request("/v2/session", token=member_token)[0] == 200
+    assert request("/v3/personal/devices", token=member_token)[0] == 200
+    assert signed(peers[0], member_token, "/v2/vault/key", {"existing_key": None})[1]["key_material"] == materials[0]
+    assert sql(f"SELECT membership_active FROM nds_company_memberships WHERE user_id={literal(user)} AND tenant_id={literal(foreign_tenant)}").stdout.strip() == "t"
+    # An explicit personal logout remains terminal across the later rejoin.
+    assert request("/v2/session",token=unobserved_member_token,method="DELETE")[0] == 204
     reset_cases()
     returning_invite = pending(email=email, user=user)[3]
     returning_token = verify(challenge(email, returning_invite), user, tenant)
-    assert request("/v2/session", token=member_token)[0] == 401, "observed membership denial revived a session"
-    assert request("/v2/session", token=unobserved_member_token)[0] == 401, "reinvitation revived an unobserved old session"
+    assert request("/v2/session", token=member_token)[0] == 200
+    assert request("/v2/session", token=unobserved_member_token)[0] == 401
     assert signed(peers[0], returning_token, "/v2/vault/key", {"existing_key": None})[1]["key_material"] == materials[0]
-    assert sql(f"SELECT member_revision FROM nds_owner WHERE user_id={literal(user)}").stdout.strip() == "2"
+    assert sql(f"SELECT member_revision FROM nds_company_memberships WHERE user_id={literal(user)} AND tenant_id={literal(tenant)}").stdout.strip() == "3"
     assert request("/v2/session", token=admin_token)[0] == 200
-    print("Company identity acceptance passed: real recipient OTP, atomic invitation consume/replay, current issuer/revocation/expiry, one-company ownership, per-user session capacity, independent device proofs and Vault keys, same-company admin/cross-company personal-data denial, restart and reinvitation preserving keys while retiring all old sessions. Invitation issuance/UI and RDS cross-user access remain separate.")
+    print("Company identity acceptance passed: real recipient OTP and atomic consume/replay, current issuer/revocation/expiry, one personal owner in two organizations, independent roles/device proofs/Vault keys, restart, membership removal/rejoin preserving personal authority while explicit logout stays terminal.")
     unavailable_delivery = check_company_management(
         signed=signed, request=request, sql=sql, challenge=challenge, verify=verify,
         enroll=enroll, messages=messages, http=http, mailbox=mailbox, restart=restart,

@@ -20,6 +20,8 @@ def check_company_management(*, signed, request, sql, challenge, verify, enroll,
     literal = lambda value: "'" + value.replace("'", "''") + "'"
     encode = lambda value: base64.urlsafe_b64encode(value).decode().rstrip("=")
     company = bootstrap["tenant_id"]
+    company_path = "/v3/organizations/" + company
+    captured_commands = {}
 
     def operation(now=None):
         # RFC9562 UUIDv7 layout; maintained stdlib UUID formats the generated bits.
@@ -27,12 +29,35 @@ def check_company_management(*, signed, request, sql, challenge, verify, enroll,
         return str(uuid.UUID(int=(stamp << 80) | (7 << 76) | (secrets.randbits(12) << 64) | (2 << 62) | secrets.randbits(62)))
 
     def call(actor, path, body=None, **options):
-        return signed(actor[0], actor[1], path, body, **options)
+        if not path.startswith(company_path):
+            return signed(actor[0], actor[1], path, body, **options)
+        # SQL supplies only an observed counter in this HTTP/store fixture, not
+        # a role or authentication grant. Production clients select via signed
+        # network discovery and have their own original-lifetime tests.
+        current = sql(f"SELECT member_revision FROM nds_company_memberships WHERE tenant_id={literal(company)} AND user_id={literal(actor[2])}").stdout.strip()
+        revision = int(current or "1")
+        method = options.get("method") or ("GET" if body is None else "POST")
+        if method == "POST":
+            raw = body if isinstance(body, bytes) else json.dumps(body, separators=(",", ":")).encode()
+            payload = json.loads(raw)
+            key = (actor[2], actor[0][1], payload.get("operation_id"), company)
+            revision = captured_commands.setdefault(key, revision)
+            body = b'{"membership_revision":' + str(revision).encode() + b',"payload":' + raw + b'}'
+        else:
+            path += ("&" if "?" in path else "?") + "membership_revision=" + str(revision)
+        status, value = signed(actor[0], actor[1], path, body, **options)
+        if 200 <= status < 300:
+            assert value["context"] == {"principal_id": actor[2], "space": {"kind": "organization", "id": company}, "membership_revision": revision}
+            for name in ("overview", "page", "invitation", "member"):
+                if name in value:
+                    return status, value[name]
+            raise AssertionError("scoped response lacked its canonical payload")
+        return status, value
 
     def page(actor, name):
         values, after = [], None
         for _ in range(30):
-            path = "/v2/company/" + name + ("?after=" + after if after else "")
+            path = company_path+"/" + name + ("?after=" + after if after else "")
             status, result = call(actor, path)
             assert status == 200
             assert len(result[name]) <= 50
@@ -50,11 +75,11 @@ def check_company_management(*, signed, request, sql, challenge, verify, enroll,
     def change(actor, target, revision, role=None, identifier=None):
         body = {"operation_id": identifier or operation(), "expected_revision": revision,
                 "action": "remove" if role is None else "set_role", "role": role}
-        return body, call(actor, "/v2/company/members/" + target, body)
+        return body, call(actor, company_path+"/members/" + target, body)
 
     def revoke(actor, identifier, command=None):
         body = {"operation_id": command or operation()}
-        return call(actor, "/v2/company/invitations/" + identifier + "/revoke", body)
+        return call(actor, company_path+"/invitations/" + identifier + "/revoke", body)
 
     def invitation_mail(address, identifier, old):
         deadline = time.monotonic() + 8
@@ -82,17 +107,22 @@ def check_company_management(*, signed, request, sql, challenge, verify, enroll,
         old = {message["ID"] for message in messages()}
         if duplicate:
             with ThreadPoolExecutor(max_workers=2) as executor:
-                outcomes = list(executor.map(lambda _: call(actor, "/v2/company/invitations", body), range(2)))
+                outcomes = list(executor.map(lambda _: call(actor, company_path+"/invitations", body), range(2)))
             assert outcomes[0] == outcomes[1] and outcomes[0][0] == 201
             result = outcomes[0][1]
         else:
-            status, result = call(actor, "/v2/company/invitations", body)
+            status, result = call(actor, company_path+"/invitations", body)
             assert status == 201
         assert result["status"] == result["delivery"] == "pending"
         assert set(result) == {"invitation_id", "issuer_user_id", "recipient_email", "role", "expires_at_ms", "status", "delivery"}
         claim = invitation_mail(address, result["invitation_id"], old)
         assert sql(f"SELECT count(*) FROM nds_company_invitations WHERE invitation_id={literal(result['invitation_id'])}").stdout.strip() == "1"
         return body, result, claim
+
+    from organization_spaces_acceptance import check_organization_spaces
+    check_organization_spaces(signed=signed, request=request, sql=sql, challenge=challenge,
+        verify=verify, invitation_mail=invitation_mail, messages=messages, operation=operation,
+        admin=admin, member=member, foreign=foreign)
 
     for actor in (admin, member, foreign):
         for path in ("/v2/observability/status", "/v2/observability/incidents"):
@@ -105,19 +135,22 @@ def check_company_management(*, signed, request, sql, challenge, verify, enroll,
             assert status == 503
         assert request("/v2/session", token=actor[1])[0] == 200
     print("Company operator boundary passed: admin/user/foreign accounts cannot read or manage the global pipeline; client policy is independent and valid sessions remain usable.", flush=True)
-    assert call(admin, "/v2/company")[1]["member"]["role"] == "admin"
-    assert call(member, "/v2/company")[1]["member"]["user_id"] == member[2]
-    assert call(member, "/v2/company/members")[0] == 403
-    assert call(member, "/v2/company/invitations", {"operation_id": operation(), "email": "denied@example.invalid", "role": "admin"})[0] == 403
-    assert call(admin, "/v2/company?company_id=injected")[0] == 400
-    assert call(admin, "/v2/company/members?company_id=injected")[0] == 400
-    assert call(admin, "/v2/company/invitations", {"operation_id": operation(), "email": "denied@example.invalid", "role": "user", "tenant_id": company})[0] == 400
+    before = sql("SELECT count(*) FROM nds_company_commands").stdout
+    assert signed(admin[0],admin[1],"/v2/company/invitations",{"operation_id":operation(),"email":"legacy@example.invalid","role":"user"}) == (403,{"error":"authorization_denied"})
+    assert sql("SELECT count(*) FROM nds_company_commands").stdout == before
+    assert call(admin, company_path)[1]["member"]["role"] == "admin"
+    assert call(member, company_path)[1]["member"]["user_id"] == member[2]
+    assert call(member, company_path+"/members")[0] == 403
+    assert call(member, company_path+"/invitations", {"operation_id": operation(), "email": "denied@example.invalid", "role": "admin"})[0] == 403
+    assert call(admin, company_path+"?company_id=injected")[0] == 400
+    assert call(admin, company_path+"/members?company_id=injected")[0] == 400
+    assert call(admin, company_path+"/invitations", {"operation_id": operation(), "email": "denied@example.invalid", "role": "user", "tenant_id": company})[0] == 400
     assert change(admin, foreign[2], 1, "user")[1][0] == 403
     stale = {"operation_id": operation(int(time.time()*1000)-360000), "email": "expired@example.invalid", "role": "user"}
-    assert call(admin, "/v2/company/invitations", stale) == (409, {"error": "command_expired"})
+    assert call(admin, company_path+"/invitations", stale) == (409, {"error": "command_expired"})
     nonce = encode(secrets.token_bytes(24))
-    assert call(member, "/v2/company/members", nonce=nonce)[0] == 403
-    assert call(member, "/v2/company/members", nonce=nonce) == (409, {"error": "replayed_nonce"})
+    assert call(member, company_path+"/members", nonce=nonce)[0] == 403
+    assert call(member, company_path+"/members", nonce=nonce) == (409, {"error": "replayed_nonce"})
 
     def targets(actor, selected):
         status, page = call(actor, "/v2/rds/targets/" + selected[2])
@@ -151,17 +184,17 @@ def check_company_management(*, signed, request, sql, challenge, verify, enroll,
     # Retire an actual successful command only after its real five-minute window.
     expiry_start = time.monotonic()
     expiry_body, expiry_invite, _ = invite(admin, duplicate=True)
-    assert call(admin, "/v2/company/invitations", json.dumps(expiry_body, indent=1).encode()) == (409, {"error": "operation_conflict"})
+    assert call(admin, company_path+"/invitations", json.dumps(expiry_body, indent=1).encode()) == (409, {"error": "operation_conflict"})
     assert revoke(admin, expiry_invite["invitation_id"], expiry_body["operation_id"]) == (409, {"error": "operation_conflict"})
     restart()
-    assert call(admin, "/v2/company/invitations", expiry_body) == (201, expiry_invite)
+    assert call(admin, company_path+"/invitations", expiry_body) == (201, expiry_invite)
 
     body, invited, claim = invite(admin, "admin")
     planned = sql(f"SELECT recipient_user_id FROM nds_company_invitations WHERE invitation_id={literal(invited['invitation_id'])}").stdout.strip()
-    assert sql(f"SELECT count(*) FROM nds_owner WHERE user_id={literal(planned)}").stdout.strip() == "0"
+    assert sql(f"SELECT verified FROM nds_owner WHERE user_id={literal(planned)}").stdout.strip() == "f"
     token = verify(challenge(body["email"], claim), planned, company)
     extra_admin = (enroll(token), token, planned)
-    assert call(extra_admin, "/v2/company")[1]["member"]["role"] == "admin"
+    assert call(extra_admin, company_path)[1]["member"]["role"] == "admin"
 
     _, doomed, doomed_claim = invite(admin)
     status, revoked = revoke(admin, doomed["invitation_id"])
@@ -173,9 +206,10 @@ def check_company_management(*, signed, request, sql, challenge, verify, enroll,
     # synthetic rows test pagination only and issue no sessions or user proofs.
     for _ in range(51):
         user = str(uuid.uuid4())
-        sql(f"INSERT INTO nds_owner(user_id,tenant_id,email_binding) VALUES({literal(user)},{literal(company)},decode('{secrets.token_hex(32)}','hex'))")
+        sql(f"INSERT INTO nds_owner(user_id,tenant_id,email_binding,verified) VALUES({literal(user)},{literal(company)},decode('{secrets.token_hex(32)}','hex'),TRUE);"
+            f"INSERT INTO nds_company_memberships(tenant_id,user_id,company_role,membership_active,member_revision) VALUES({literal(company)},{literal(user)},'user',TRUE,1)")
     all_members = page(admin, "members")
-    expected = sql(f"SELECT user_id FROM nds_owner WHERE tenant_id={literal(company)} ORDER BY user_id").stdout.splitlines()
+    expected = sql(f"SELECT m.user_id FROM nds_company_memberships m JOIN nds_owner o USING(user_id) WHERE m.tenant_id={literal(company)} AND o.verified ORDER BY m.user_id").stdout.splitlines()
     assert [item["user_id"] for item in all_members] == expected
     assert foreign[2] not in expected
 
@@ -191,12 +225,12 @@ def check_company_management(*, signed, request, sql, challenge, verify, enroll,
     survivor_index = next(index for index, outcome in enumerate(outcomes) if outcome == (409, {"error": "last_administrator"}))
     authority = actors[survivor_index]
     demoted = actors[1-survivor_index]
-    assert call(demoted, "/v2/company/members")[0] == 403
+    assert call(demoted, company_path+"/members")[0] == 403
     assert request("/v2/session", token=demoted[1])[0] == 200
     assert change(authority, authority[2], revisions[survivor_index])[1] == (409, {"error": "last_administrator"})
     # A privileged receipt never bypasses the actor's current role on replay.
     repeated = {"operation_id": command_ids[1-survivor_index], "expected_revision": revisions[1-survivor_index], "action": "set_role", "role": "user"}
-    assert call(demoted, "/v2/company/members/" + demoted[2], repeated)[0] == 403
+    assert call(demoted, company_path+"/members/" + demoted[2], repeated)[0] == 403
     _, restored = change(authority, bootstrap["user_id"], bootstrap_row["revision"]+1, "admin")
     assert restored[0] == 200
 
@@ -318,17 +352,17 @@ def check_company_management(*, signed, request, sql, challenge, verify, enroll,
     revision = member_row(authority, member[2])["revision"]
     payload, removed = change(authority, member[2], revision)
     assert removed[0] == 200 and removed[1]["active"] is False
-    assert request("/v2/session", token=member[1])[0] == 401
+    assert request("/v2/session", token=member[1])[0] == 200
     assert call(authority,"/v2/rds/targets/"+member[2])[0] == 403
     assert sql(f"SELECT state||':'||(native_grant IS NULL)::text FROM nds_screen_views WHERE view_id={literal(view['view_id'])}").stdout.strip() == "ended:true"
-    assert call(authority, "/v2/company/members/" + member[2], payload) == removed
+    assert call(authority, company_path+"/members/" + member[2], payload) == removed
     assert change(authority, member[2], revision)[1] == (409, {"error": "operation_conflict"})
     assert sql(f"SELECT count(*) FROM nds_vault_keys WHERE user_id={literal(member[2])}").stdout.strip() == "1"
 
     # No clock rewriting or expiration-column edits qualify this boundary.
     while time.monotonic()-expiry_start < 301:
         time.sleep(max(0.001,min(1,301-(time.monotonic()-expiry_start))))
-    assert call(authority, "/v2/company/invitations", {"operation_id":operation(),"email":uuid.uuid4().hex+"@example.invalid","role":"user"})[0] == 201
+    assert call(authority, company_path+"/invitations", {"operation_id":operation(),"email":uuid.uuid4().hex+"@example.invalid","role":"user"})[0] == 201
     # Cleanup is scoped to the original actor. It may have been demoted; use a
     # new current-authority command from that same actor after a real promotion.
     if authority[2] != admin[2]:
@@ -336,17 +370,17 @@ def check_company_management(*, signed, request, sql, challenge, verify, enroll,
         assert change(authority, admin[2], current["revision"], "admin")[1][0] == 200
     assert revoke(admin, expiry_invite["invitation_id"])[0] == 200
     assert sql(f"SELECT count(*) FROM nds_company_commands WHERE operation_id={literal(expiry_body['operation_id'])}::uuid").stdout.strip() == "0"
-    assert call(admin, "/v2/company/invitations", expiry_body) == (409, {"error":"command_expired"})
-    print("Company management acceptance passed: signed admin creation, actual SMTP link and recipient OTP, exact concurrent replay/restart, role and cross-company denial, bounded pages, concurrent last-admin protection, removal retires sessions and real HTTP screen metadata while retaining Vault, and real five-minute receipt retirement rejects reuse.", flush=True)
+    assert call(admin, company_path+"/invitations", expiry_body) == (409, {"error":"command_expired"})
+    print("Company management acceptance passed: signed admin creation, actual SMTP link and recipient OTP, exact concurrent replay/restart, role and cross-company denial, bounded pages, concurrent last-admin protection, removal retires cross-user HTTP screen access while retaining personal sessions and Vault, and real five-minute receipt retirement rejects reuse.", flush=True)
 
     def unavailable_delivery():
         address = uuid.uuid4().hex + "@example.invalid"
         body = {"operation_id":operation(),"email":address,"role":"user"}
-        status, created = call(admin, "/v2/company/invitations", body)
+        status, created = call(admin, company_path+"/invitations", body)
         assert status == 201 and created["delivery"] == "pending"
         current = next(item for item in page(admin,"invitations") if item["invitation_id"] == created["invitation_id"])
         assert current["delivery"] == "failed" and current["status"] == "pending"
-        assert call(admin,"/v2/company/invitations",body) == (201,created)
+        assert call(admin,company_path+"/invitations",body) == (201,created)
         assert sql(f"SELECT count(*) FROM nds_company_invitations WHERE invitation_id={literal(created['invitation_id'])}").stdout.strip() == "1"
         print("Company delivery failure passed: creation remains distinct from delivery; unavailable shared SMTP produces explicit failed state and replay never creates or sends another invitation.")
         return [address]

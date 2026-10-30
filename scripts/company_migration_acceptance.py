@@ -43,3 +43,5 @@ def check_company_upgrade(sql):
     assert sql("SELECT value FROM nddev_schema_meta WHERE key='schema_version'").stdout.strip() == "13"
     assert sql("UPDATE nds_company_commands SET response=response WHERE false", "nds_runtime", check=False).returncode != 0
     print("Company migration passed: production 11-to12-to13 SQL preserves owner/device/key/record/receipt bytes and decryption, binds existing OTP challenges, rejects accidental direct reapplication, and keeps command receipts immutable to runtime.")
+    from membership_migration_acceptance import check_membership_upgrade
+    check_membership_upgrade(sql, witness)
