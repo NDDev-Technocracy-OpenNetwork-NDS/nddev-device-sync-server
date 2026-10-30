@@ -126,6 +126,14 @@ exact fixture certificate independently; no system trust or live certificate
 is changed. This option is confined to the acceptance harness.
 
 Client catalog acceptance uses `--fixture-sync3` with `--fixture-receipt`.
+An owned native client fixture can consume an already qualified server artifact
+with `--fixture-server /absolute/artifact --fixture-server-sha256 SHA256`.
+Both require a fresh fixture receipt; the regular artifact must be outside the
+source checkout and match its digest before any provider starts. Otherwise the
+existing Cargo-selected debug server remains the default. This permits separate
+build and native execution hosts without changing production server behavior.
+The caller still verifies the artifact's source and the actual served identity;
+a digest alone is not publisher or source authentication.
 The fixture defaults to 1200 seconds; `--fixture-seconds` explicitly bounds its
 lifetime up to 14400 seconds for complete native fleets. Request deadlines,
 device/entity quotas and replay admission retain their production values.
