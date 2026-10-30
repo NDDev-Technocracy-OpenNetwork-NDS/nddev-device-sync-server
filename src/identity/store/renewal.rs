@@ -22,7 +22,7 @@ impl SessionRenewalStore for Store {
                 let now = crate::sync::store::authorize(&mut tx, authorization, signed, now).await?;
                 let row = sqlx::query(
                     "SELECT user_id,tenant_id,auth_method,authenticated_at_ms,expires_at_ms \
-                     FROM nds_sessions WHERE token_digest=$1 AND user_id=$2 AND tenant_id=$3 FOR UPDATE",
+                     FROM nds_sessions WHERE token_digest=$1 AND user_id=$2 AND tenant_id=$3 AND NOT revoked FOR UPDATE",
                 )
                 .bind(authorization.binding.0.as_slice())
                 .bind(authorization.session.owner.user_id.as_str())
@@ -42,7 +42,7 @@ impl SessionRenewalStore for Store {
                     _ => SyncError::Unavailable,
                 })?;
                 let updated = sqlx::query(
-                    "UPDATE nds_sessions SET expires_at_ms=$2 WHERE token_digest=$1 AND user_id=$3 AND tenant_id=$4",
+                    "UPDATE nds_sessions SET expires_at_ms=$2 WHERE token_digest=$1 AND user_id=$3 AND tenant_id=$4 AND NOT revoked",
                 )
                 .bind(authorization.binding.0.as_slice())
                 .bind(millis(renewed.expires_at_ms).map_err(unavailable)?)

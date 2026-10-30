@@ -29,7 +29,12 @@ def snapshot(sql, original=None):
         source = table if original is None else table.replace("nds_sync_", "nds_replica_")
         columns = "*" if original is None else ",".join(
             name for name in json.loads(original[table])[0] if name != "singleton")
-        text = sql(f"SELECT row_to_json(t)::text FROM (SELECT {columns} FROM {source}) t").stdout.strip()
+        selected = ""
+        if original is not None:
+            binding = json.loads(original[table])[0]
+            literal = lambda value: "'" + value.replace("'", "''") + "'"
+            selected = f" WHERE user_id={literal(binding['user_id'])} AND tenant_id={literal(binding['tenant_id'])}"
+        text = sql(f"SELECT row_to_json(t)::text FROM (SELECT {columns} FROM {source}{selected}) t").stdout.strip()
         rows = [json.loads(line) for line in text.splitlines()]
         assert len(rows) == 1, f"upgrade witness row count changed: {table}"
         # Schema12 deliberately removes only the obsolete singleton constraint;
@@ -106,8 +111,12 @@ COMMIT;""")
 def verify(sql, witness):
     from cryptography.hazmat.primitives.ciphers.aead import AESGCM
     current = snapshot(sql, witness["rows"])
-    assert sql("SELECT is_bootstrap AND company_role='admin' AND membership_active AND member_revision=1 FROM nds_owner").stdout.strip() == "t"
-    assert sql("SELECT count(*) FROM nds_companies").stdout.strip() == "1"
+    user,tenant=witness["user"],witness["tenant"]
+    if int(sql("SELECT value FROM nddev_schema_meta WHERE key='schema_version'").stdout.strip()) >= 15:
+        assert sql(f"SELECT o.is_bootstrap AND o.verified AND m.company_role='admin' AND m.membership_active AND m.member_revision=1 FROM nds_owner o JOIN nds_company_memberships m USING(user_id,tenant_id) WHERE o.user_id='{user}' AND o.tenant_id='{tenant}'").stdout.strip() == "t"
+    else:
+        assert sql(f"SELECT is_bootstrap AND company_role='admin' AND membership_active AND member_revision=1 FROM nds_owner WHERE user_id='{user}' AND tenant_id='{tenant}'").stdout.strip() == "t"
+    assert sql(f"SELECT count(*) FROM nds_companies WHERE tenant_id='{tenant}'").stdout.strip() == "1"
     assert sql("SELECT admission_version=2 AND floor_seq=0 AND base_seq=0 FROM public.nds_replica_counters").stdout.strip() == "t"
     assert sql("SELECT applied_seq=1 FROM public.nds_replica_entities").stdout.strip() == "t"
     assert sql("SELECT wire_version=2 AND base_revision=0 AND applied_revision=1 AND request_bytes=octet_length(request_body) AND result_bytes=octet_length(result_body) FROM public.nds_replica_operations").stdout.strip() == "t"
@@ -158,6 +167,8 @@ def check_rejected_history(sql, witness):
 def clean(sql, witness):
     assert witness["checks"] == 2, "upgrade witnesses must survive both migration and repeat"
     user, tenant = witness["user"], witness["tenant"]  # Generated canonical UUIDs only.
+    if sql("SELECT to_regclass('public.nds_company_memberships') IS NOT NULL").stdout.strip()=="t":
+        sql(f"DELETE FROM nds_company_memberships WHERE user_id='{user}'")
     order = ("nds_sync_entities", "nds_sync_operations", "nds_sync_counters",
              "nds_vault_keys", "nds_sessions", "nds_devices", "nds_owner")
     for old in order:

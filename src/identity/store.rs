@@ -96,8 +96,9 @@ impl Store {
             if !exists {
                 let tenant = uuid::Uuid::new_v4().to_string();
                 sqlx::query("INSERT INTO nds_companies(tenant_id,display_name) VALUES($1,'NDS')").bind(&tenant).execute(&mut *tx).await.map_err(unavailable)?;
-                sqlx::query("INSERT INTO nds_owner(user_id,tenant_id,email_binding,github_id,is_bootstrap,company_role,email) VALUES($1,$2,$3,$4,TRUE,'admin',$5)")
+                sqlx::query("INSERT INTO nds_owner(user_id,tenant_id,email_binding,github_id,is_bootstrap,verified,email) VALUES($1,$2,$3,$4,TRUE,TRUE,$5)")
                     .bind(uuid::Uuid::new_v4().to_string()).bind(&tenant).bind(email.0.as_slice()).bind(github_id.map(millis).transpose()?).bind(address.as_str()).execute(&mut *tx).await.map_err(unavailable)?;
+                sqlx::query("INSERT INTO nds_company_memberships(tenant_id,user_id,company_role,membership_active,member_revision) SELECT tenant_id,user_id,'admin',TRUE,1 FROM nds_owner WHERE is_bootstrap").execute(&mut *tx).await.map_err(unavailable)?;
             }
             let row = sqlx::query("SELECT user_id,tenant_id,email_binding,github_id,email FROM nds_owner WHERE is_bootstrap").fetch_one(&mut *tx).await.map_err(unavailable)?;
             let stored_github: Option<i64> = row.try_get("github_id").map_err(unavailable)?;
@@ -116,17 +117,22 @@ pub(crate) async fn membership(
     tx: &mut Tx<'_>,
     owner: &Owner,
 ) -> Result<Membership, IdentityError> {
+    membership_in(tx, owner, &owner.tenant_id).await
+}
+
+pub(crate) async fn membership_in(
+    tx: &mut Tx<'_>,
+    owner: &Owner,
+    company: &TenantId,
+) -> Result<Membership, IdentityError> {
     let row = sqlx::query(
-        "SELECT company_role,membership_active FROM nds_owner WHERE user_id=$1 AND tenant_id=$2",
+        "SELECT m.company_role,m.membership_active FROM nds_company_memberships m JOIN nds_owner o USING(user_id) WHERE m.user_id=$1 AND o.tenant_id=$2 AND m.tenant_id=$3 AND o.verified",
     )
-    .bind(owner.user_id.as_str())
-    .bind(owner.tenant_id.as_str())
-    .fetch_optional(&mut **tx)
-    .await
-    .map_err(unavailable)?
-    .ok_or(IdentityError::Denied)?;
+    .bind(owner.user_id.as_str()).bind(owner.tenant_id.as_str()).bind(company.as_str())
+    .fetch_optional(&mut **tx).await.map_err(unavailable)?.ok_or(IdentityError::Denied)?;
     Ok(Membership {
         owner: owner.clone(),
+        company_id: company.clone(),
         role: match row
             .try_get::<&str, _>("company_role")
             .map_err(unavailable)?
@@ -139,18 +145,14 @@ pub(crate) async fn membership(
     })
 }
 
-/// Shared transactional session/active-membership boundary. Personal modules
-/// retain exact owner scope; an administrative role never bypasses it.
+/// An established personal session survives an organization membership change.
+/// Organization/RDS administration checks current membership separately.
 pub(crate) async fn session_expiry(
     tx: &mut Tx<'_>,
     owner: &Owner,
     token: ProtectedDigest,
 ) -> Result<Option<i64>, IdentityError> {
-    let member = membership(tx, owner).await?;
-    if member.authorize_personal(owner, owner).is_err() {
-        return Ok(None);
-    }
-    sqlx::query_scalar("SELECT expires_at_ms FROM nds_sessions WHERE token_digest=$1 AND user_id=$2 AND tenant_id=$3")
+    sqlx::query_scalar("SELECT s.expires_at_ms FROM nds_sessions s JOIN nds_owner o USING(user_id,tenant_id) WHERE s.token_digest=$1 AND s.user_id=$2 AND s.tenant_id=$3 AND o.verified AND NOT s.revoked")
         .bind(token.0.as_slice()).bind(owner.user_id.as_str()).bind(owner.tenant_id.as_str()).fetch_optional(&mut **tx).await.map_err(unavailable)
 }
 
@@ -166,7 +168,7 @@ pub(crate) async fn clean(tx: &mut Tx<'_>, now: u64) -> Result<(), IdentityError
         .execute(&mut **tx)
         .await
         .map_err(unavailable)?;
-    sqlx::query("DELETE FROM nds_sessions WHERE expires_at_ms <= $1")
+    sqlx::query("DELETE FROM nds_sessions WHERE expires_at_ms <= $1 OR revoked")
         .bind(now)
         .execute(&mut **tx)
         .await
@@ -217,10 +219,17 @@ pub(crate) async fn insert_session(
     passkey: Option<&[u8]>,
 ) -> Result<Session, IdentityError> {
     let owner = &issue.session.owner;
-    membership(tx, owner)
-        .await?
-        .authorize_personal(owner, owner)
-        .map_err(|_| IdentityError::Denied)?;
+    let established: bool = sqlx::query_scalar(
+        "SELECT EXISTS(SELECT 1 FROM nds_owner WHERE user_id=$1 AND tenant_id=$2 AND verified)",
+    )
+    .bind(owner.user_id.as_str())
+    .bind(owner.tenant_id.as_str())
+    .fetch_one(&mut **tx)
+    .await
+    .map_err(unavailable)?;
+    if !established {
+        return Err(IdentityError::Denied);
+    }
     let count: i64 =
         sqlx::query_scalar("SELECT count(*) FROM nds_sessions WHERE user_id=$1 AND tenant_id=$2")
             .bind(owner.user_id.as_str())
@@ -261,7 +270,7 @@ impl IdentityStore for Store {
             let count: i64 = sqlx::query_scalar("SELECT count(*) FROM nds_email_challenges").fetch_one(&mut *tx).await.map_err(unavailable)?;
             if count as usize >= MAX_PENDING_EMAIL { return Err(IdentityError::Capacity); }
             let principal = if issue.invitation.is_none() {
-                sqlx::query("SELECT user_id,tenant_id FROM nds_owner WHERE email_binding=$1 AND membership_active")
+                sqlx::query("SELECT user_id,tenant_id FROM nds_owner WHERE email_binding=$1 AND verified")
                     .bind(issue.owner_binding.0.as_slice()).fetch_optional(&mut *tx).await.map_err(unavailable)?
             } else { None };
             let invitation = crate::organizations::store::invitation_for_email(&mut tx,&issue,now).await?;
@@ -306,10 +315,14 @@ impl IdentityStore for Store {
             let accepted = challenge.consume(now, matches);
             sqlx::query("UPDATE nds_email_challenges SET attempts_remaining=$2,consumed=$3 WHERE challenge_id=$1").bind(id).bind(challenge.attempts_remaining as i16).bind(challenge.consumed).execute(&mut *tx).await.map_err(unavailable)?;
             let invitation: Option<String> = row.try_get("invitation_id").map_err(unavailable)?;
+            let mut invitation_company = None;
             let outcome = match accepted {
                 Ok(()) => {
                     let owner = if let Some(invitation) = &invitation {
-                        crate::organizations::store::accept_invitation(&mut tx,invitation,now).await
+                        match crate::organizations::store::accept_invitation(&mut tx,invitation,now).await {
+                            Ok((owner,company)) => { invitation_company=Some(company); Ok(owner) },
+                            Err(error) => Err(error),
+                        }
                     } else {
                         Ok(Owner {
                             user_id: UserId::new(row.try_get::<String,_>("user_id").map_err(unavailable)?).map_err(unavailable)?,
@@ -327,8 +340,8 @@ impl IdentityStore for Store {
             // the entire consumption, allowing correct reauthentication later.
             if matches!(outcome, Err(IdentityError::Capacity | IdentityError::Unavailable)) { return outcome; }
             tx.commit().await.map_err(unavailable)?;
-            if let (Some(invitation),Ok(session))=(&invitation,&outcome) {
-                tracing::info!(module="organizations",scope="database",event.name="company.invitation.accepted",outcome="ok",invitation.id=invitation.as_str(),user.id=session.owner.user_id.as_str(),tenant.id=session.owner.tenant_id.as_str());
+            if let (Some(invitation),Some(company),Ok(session))=(&invitation,&invitation_company,&outcome) {
+                tracing::info!(module="organizations",scope="database",event.name="company.invitation.accepted",outcome="ok",invitation.id=invitation.as_str(),user.id=session.owner.user_id.as_str(),tenant.id=company.as_str());
             }
             outcome
         }).await
@@ -340,7 +353,7 @@ impl IdentityStore for Store {
     ) -> Result<Option<Owner>, IdentityError> {
         bounded(async {
             let row = sqlx::query(
-                "SELECT user_id,tenant_id FROM nds_owner WHERE github_id=$1 AND membership_active",
+                "SELECT user_id,tenant_id FROM nds_owner WHERE github_id=$1 AND verified",
             )
             .bind(millis(provider_id)?)
             .fetch_optional(&self.pool)
@@ -369,7 +382,7 @@ impl IdentityStore for Store {
         bounded(async {
             let mut tx = self.transaction().await?;
             clean(&mut tx, now).await?;
-            let current:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM nds_owner WHERE user_id=$1 AND tenant_id=$2 AND github_id=$3 AND membership_active)")
+            let current:bool=sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM nds_owner WHERE user_id=$1 AND tenant_id=$2 AND github_id=$3 AND verified)")
                 .bind(identity.owner.user_id.as_str()).bind(identity.owner.tenant_id.as_str()).bind(millis(identity.provider_id)?).fetch_one(&mut *tx).await.map_err(unavailable)?;
             if !current { return Err(IdentityError::Denied); }
             let session = insert_session(&mut tx, issue.issue(identity.owner,AuthMethod::Github)?, None).await?;
@@ -381,10 +394,10 @@ impl IdentityStore for Store {
     async fn session(&self, token: ProtectedDigest, now: u64) -> Result<Session, IdentityError> {
         bounded(async {
             let mut tx = self.transaction().await?;
-            // Observed expiry or removal is terminal for this session. A later
-            // invitation cannot revive a session already denied by membership.
-            sqlx::query("DELETE FROM nds_sessions s WHERE token_digest=$1 AND (expires_at_ms <= GREATEST($2,COALESCE((SELECT clock_floor_ms FROM nds_replica_counters c WHERE c.user_id=s.user_id AND c.tenant_id=s.tenant_id),0)) OR NOT EXISTS(SELECT 1 FROM nds_owner o WHERE o.user_id=s.user_id AND o.tenant_id=s.tenant_id AND o.membership_active))").bind(token.0.as_slice()).bind(millis(now)?).execute(&mut *tx).await.map_err(unavailable)?;
-            let row = sqlx::query("SELECT s.user_id,s.tenant_id,s.auth_method,s.authenticated_at_ms,s.expires_at_ms FROM nds_sessions s JOIN nds_owner o USING(user_id,tenant_id) LEFT JOIN nds_replica_counters c USING(user_id,tenant_id) WHERE s.token_digest=$1 AND s.expires_at_ms > GREATEST($2,COALESCE(c.clock_floor_ms,0)) AND o.membership_active").bind(token.0.as_slice()).bind(millis(now)?).fetch_optional(&mut *tx).await.map_err(unavailable)?;
+            // Observed expiry or loss of the established personal account is
+            // terminal. Organization changes do not replace personal sessions.
+            sqlx::query("DELETE FROM nds_sessions s WHERE token_digest=$1 AND (revoked OR expires_at_ms <= GREATEST($2,COALESCE((SELECT clock_floor_ms FROM nds_replica_counters c WHERE c.user_id=s.user_id AND c.tenant_id=s.tenant_id),0)) OR NOT EXISTS(SELECT 1 FROM nds_owner o WHERE o.user_id=s.user_id AND o.tenant_id=s.tenant_id AND o.verified))").bind(token.0.as_slice()).bind(millis(now)?).execute(&mut *tx).await.map_err(unavailable)?;
+            let row = sqlx::query("SELECT s.user_id,s.tenant_id,s.auth_method,s.authenticated_at_ms,s.expires_at_ms FROM nds_sessions s JOIN nds_owner o USING(user_id,tenant_id) LEFT JOIN nds_replica_counters c USING(user_id,tenant_id) WHERE s.token_digest=$1 AND s.expires_at_ms > GREATEST($2,COALESCE(c.clock_floor_ms,0)) AND o.verified AND NOT s.revoked").bind(token.0.as_slice()).bind(millis(now)?).fetch_optional(&mut *tx).await.map_err(unavailable)?;
             // Denial must not roll back the observed-expiry deletion.
             tx.commit().await.map_err(unavailable)?;
             let row = row.ok_or(IdentityError::Denied)?;
