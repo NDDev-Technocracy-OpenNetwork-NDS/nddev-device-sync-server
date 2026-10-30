@@ -13,7 +13,8 @@ The current server provides:
 - direct Rust/rustls HTTPS, bounded connection drain and safe certificate reload;
 - finite connection/handler admission and scoped, expiring debug diagnostics;
 - email OTP, explicitly bound GitHub identities and browser WebAuthn passkeys;
-- signed company invitations, revision-checked membership and last-administrator protection;
+- independent personal identity and multiple organizations, signed invitations,
+  captured membership revisions and last-administrator protection;
 - bounded passkey metadata and fresh-session credential/session revocation;
 - browser pairing approval, expiring/revocable sessions and bounded abuse controls;
 - signed active-device renewal of seven-day authority, preserving the original
@@ -36,10 +37,12 @@ The legacy `module_count` health field is zero: the server composes no local-too
 adapters. The native agent discovers those adapters; core owns their observation
 rules and the shared replica policy.
 
-Company identity storage preserves existing user/device/Vault bindings. Personal
+Organization memberships preserve the original personal user/device/Vault
+bindings. One principal can create and join multiple organizations; each scoped
+read or immutable command captures the exact membership revision. Personal
 data remains owner-only, including for administrators. The administrative API and
 SMTP invitation/OTP path are implemented. RDS control metadata permits current
-same-company administrators to request another member's device while retaining
+original-company administrators to request another member's device while retaining
 participant-only grants, current-session/membership revalidation and signed
 device discovery bounded to 32 targets. Platform capture and rendering are
 qualified by their RDS/client consumers. Global monitoring

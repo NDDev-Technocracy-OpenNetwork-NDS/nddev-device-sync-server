@@ -94,7 +94,7 @@ Release deployments must instead consume the reviewed built image by digest.
 
 The server exposes `/v1/health`, `/v1/ready`, `/source` and the implemented v2
 identity/device routes, with request IDs and `Cache-Control: no-store`. Identity is
-unavailable until configured privately. `/v1/ready` requires schema version 13;
+unavailable until configured privately. `/v1/ready` requires schema version 15;
 use the explicit migrator before starting the updated runtime. The observability
 pipeline remains a separate slice.
 
@@ -377,7 +377,7 @@ legacy outcomes and expired basis/cursor/checkpoint are explicit refusals, never
 replacement operations or success receipts. Commit telemetry is emitted only
 after the database confirms the transaction.
 
-Readiness requires schema 13. The old SQL table names no longer exist; stop old
+Readiness requires schema 15. The old SQL table names no longer exist; stop old
 server writers before deploying this schema. Build/unit and ordinary isolated
 PostgreSQL tests do not establish old-binary exclusion, lost-commit-acknowledgement
 handling or physical storage-failure qualification. Qualify those deployment
@@ -388,7 +388,7 @@ live migration or retention change.
 
 Schema 10 adds current endpoint binding rows and finite screen intent/receipt
 rows. Apply the append-only migration with the existing migrator credential;
-Current readiness requires schema13. The runtime role has only the needed
+Current readiness requires schema15. The runtime role has only the needed
 SELECT/INSERT, binding transition and view state/grant UPDATE, and expired-view
 DELETE privileges. It cannot change owner/session references, original request,
 profile/admission/expiry, delete binding CAS history or perform DDL/TRUNCATE.
@@ -426,11 +426,11 @@ The owning PostgreSQL/SMTP gate uses fresh enrollment and independent OpenSSL
 HTTP/endpoint signatures, tests races, exact artifact/receipt replay, cap, expiry,
 clock floor, session/device revocation, timeout and runtime privileges. Its opaque
 server artifact fixture is not claimed to be a valid native grant. To additionally
-exercise schema9-to13 with a preserved schema9 server binary outside this checkout,
+exercise schema9-to15 with a preserved schema9 server binary outside this checkout,
 the optional upgrade fixture requires `cryptography==50.0.2` in its Python
 environment. It uses real AES-256-GCM for seven bounded existing rows in owner,
 device, session, vault envelope, sync counter/entity/operation tables. Canonical
-original data columns and digests are checked after migration13 and its repeat; envelope
+original data columns and digests are checked after migration15 and its repeat; envelope
 and record decryption remain valid. These are isolated storage witnesses, not
 fabricated authenticated NDS sessions. The existing real HTTP/PG/SMTP checks
 run after scoped witness cleanup:
@@ -442,46 +442,71 @@ python3 scripts/check-postgres.py --fixture-passkeys --upgrade-from /ABS/PREVIOU
 This gate owns ephemeral PostgreSQL/SMTP only and does not deploy or establish
 native capture, protected Accounts storage or shared Flutter runtime acceptance.
 
-## Company identity and schema 12
+## Personal identities and organization memberships, schemas 12–15
 
-The existing tenant becomes a company and the configured bootstrap owner becomes
-its administrator. User, tenant, device, key-envelope and encrypted-operation
-identities remain unchanged; only the obsolete singleton column is removed.
-Each user belongs to one company. Existing eligible OTP challenges are bound to
-the established bootstrap principal without changing their verifier or expiry.
+Schema15 separates the original personal owner from organization membership.
+The original user/tenant tuple remains the owner of devices, key envelopes,
+Vault ciphertext/AAD, operations and command receipts. One verified principal
+can have up to32 retained memberships, including removed ones; rejoining uses
+the same row. Membership alone never grants another person's Vault, credentials
+or GDS stream. Global monitoring administration is separate.
+
+The production migration moves each existing role/activity/revision to the sole
+`nds_company_memberships` authority and removes those role columns from
+`nds_owner`. Established identities become verified; new invitation reservations
+remain ineligible for ordinary login until protected recipient verification.
+Old sessions previously denied by inactive membership stay explicitly revoked,
+with their original proof times, token digests and expiries unchanged. Pending
+invitations retain the original personal issuer/recipient tuples independently
+of their selected organization. No personal owner, key or ciphertext is relabeled.
+Stop older writers before the explicit migration; their readiness contract does
+not match schema15. No downgrade/data-recovery guarantee is implied.
 
 `POST /v2/auth/invitations/challenges` accepts email, invitation ID and protected
-link possession, then uses the ordinary email verification endpoint. Link
-possession alone creates neither a member nor a session. Acceptance rechecks
-current inviting authority, intended recipient, expiry and status in the same
-transaction as activation and session creation. Reinvitation retains the original
-user/Vault binding and invalidates all prior sessions. Normal sign-in, personal
-sync, device actions and passkey mutations check current active membership.
-Role alone never grants another user's Vault, credentials or GDS stream.
+link possession, then uses ordinary OTP verification. Acceptance checks current
+issuer authority, recipient, expiry and status in the same transaction as
+membership activation and session creation. Joining an existing principal adds
+or reactivates only that organization's membership and increments its revision;
+personal sessions and other memberships remain valid. Explicit personal logout
+and device/session revocation retain their original terminal meaning.
 
 Passkey login accepts an email account selector. Omission is accepted only when
-there is exactly one active account. Registration uses its authenticated session
-and rejects a selector. Neither email selection nor global method availability
-is proof of user verification. WebAuthn credential proof is still required.
+there is exactly one verified account. Registration uses its authenticated
+session and rejects a selector. Email selection and method availability are not
+proof of user verification; WebAuthn credential proof remains required.
 
-The company administration API is described below. Native/web presentation,
-invitation-fragment handling, cross-user RDS and multiple-user WebAuthn browser
-acceptance remain separate work. Source inclusion does not establish completion
-of those clients or authorize deployment.
+With `cryptography==50.0.2`, `--upgrade-company` runs production11-to15 SQL
+against generated encrypted originals in a separate disposable database. It
+checks decryption, original identity/device/key/operation/receipt columns,
+pending OTP/invitation retention, old session revocation, runtime privileges,
+rollback on failure and rejected direct reapplication. This supplements fresh
+SQLx migration/repeat checks and grants no live deployment authority.
 
-With `cryptography==50.0.2`, add `--upgrade-company` to the PostgreSQL gate to
-exercise production 11-to12-to13 SQL in a separate disposable database. Existing
-encrypted witnesses remain decryptable and old OTP state is preserved. This
-supplements fresh SQLx migration/repeat checks; it does not authorize deployment.
+## Organization administration, v3
 
-## Company administration and schema 13
+All routes require the original personal session and enrolled-device signature.
+`GET /v3/organizations` returns that principal's active memberships, with a
+personal context. `POST /v3/organizations` creates an organization and its first
+administrator; account registration remains closed. Selecting a display name
+or organization ID confers no membership.
 
-All company routes require a current session and enrolled-device HTTP signature.
-`GET /v2/company` returns the caller's company and membership. Active company
-administrators can page `/v2/company/members` and `/v2/company/invitations`, create
-an invitation with POST to the latter, revoke it through
-`/v2/company/invitations/{invitation_id}/revoke`, and change/remove a member through
-`POST /v2/company/members/{user_id}`. Callers cannot select another company.
+Scoped routes start with `/v3/organizations/{company_id}`: the root returns an
+overview; `/members` and `/invitations` return bounded pages. Administrators
+create invitations with POST to `/invitations`, revoke through
+`/invitations/{invitation_id}/revoke`, and change/remove through
+`/members/{user_id}`. Reads include the captured `membership_revision` in the
+signed query; mutations wrap the unchanged command payload with that revision.
+Replies identify the initiating principal, organization and membership revision.
+Current authority and the exact captured revision are checked transactionally
+before a read, effect or receipt replay. A role change/removal/rejoin cannot lend
+a replacement grant to old work. Late local refusal does not prove that a
+submitted mutation had no effect.
+
+Legacy `/v2/company` reads remain confined to the original company. Legacy
+mutations without a captured revision refuse; clients must adopt the v3 contract
+explicitly. Existing v2 RDS cross-user control remains original-company scoped,
+while personal own-device access is independent of organization membership.
+This transition does not add cross-organization RDS or shared Vault-key delivery.
 
 Mutations carry a canonical UUIDv7 `operation_id`; its timestamp fixes a
 five-minute retry window, with at most sixty seconds of future clock skew.
@@ -490,8 +515,8 @@ Current authority is checked before replaying the original status/body; another
 request under that ID conflicts. The expired ID remains invalid after receipt
 cleanup or restart. Up to128 receipts per device are retained, each at most4KiB.
 Member changes also require the observed revision and atomically preserve the
-last active administrator. Removal revokes sessions and enrollment challenges,
-retires affected server screen metadata and retains personal keys/data. Demotion
+last active administrator. Removal retires affected cross-user server screen metadata while retaining
+personal sessions, enrollment, keys/data and other memberships. Demotion
 revokes outstanding invitations issued by that administrator and removes only
 administrative cross-user screen authority.
 
@@ -514,14 +539,16 @@ rechecks current authority, status and expiry.
 
 Links use the configured origin and `#invite/<id>/<token>`, keeping tokens out of
 HTTP request targets. Clients must consume and clear that fragment, then perform
-the recipient OTP flow; the current presentation does not yet implement this
-handoff. Tokens, verifiers and recipient addresses never enter telemetry. Audit
+the recipient OTP flow through the owning Accounts client. Tokens, verifiers and recipient addresses never enter telemetry. Audit
 records distinguish creation, acceptance, role changes, removal and delivery;
 public command/invitation IDs correlate verified actors and targets with traces.
 
 The ordinary real PostgreSQL/SMTP gate checks signed administrative creation,
 actual mail and recipient OTP, concurrent duplicate requests, changed bytes,
 restart, cross-company/member denial, pagination, concurrent last-admin changes,
-session/screen-metadata retirement and real five-minute command expiration.
+scoped screen-metadata retirement, preserved personal authority and real
+five-minute command expiration. The v3 cases also exercise same-name distinct
+organizations, stale membership epochs, real invitation+OTP rejoin and the
+actual32-membership bound without partial writes.
 Separate real collector/native-client qualification proves operator restriction
 and ordinary client policy without disabling authentication or telemetry.

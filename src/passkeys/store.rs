@@ -13,7 +13,7 @@ impl Store {
         bounded(async {
             // Existing single-account clients may omit a selector. Ambiguity
             // must never select the bootstrap/first user in a company instance.
-            let rows = sqlx::query("SELECT user_id,tenant_id FROM nds_owner WHERE membership_active AND ($1::bytea IS NULL OR email_binding=$1) ORDER BY user_id LIMIT 2")
+            let rows = sqlx::query("SELECT user_id,tenant_id FROM nds_owner WHERE verified AND ($1::bytea IS NULL OR email_binding=$1) ORDER BY user_id LIMIT 2")
                 .bind(email.as_ref().map(|value| value.0.as_slice()))
                 .fetch_all(&self.0)
                 .await
@@ -33,7 +33,7 @@ impl Store {
     }
     pub async fn available(&self) -> Result<bool, IdentityError> {
         bounded(async {
-            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM nds_passkeys p JOIN nds_owner o USING(user_id,tenant_id) WHERE o.membership_active)")
+            sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM nds_passkeys p JOIN nds_owner o USING(user_id,tenant_id) WHERE o.verified)")
                 .fetch_one(&self.0).await.map_err(unavailable)
         }).await
     }
@@ -76,7 +76,7 @@ impl Store {
             let mut tx = identity.transaction().await?;
             let now = now.max(crate::identity::now_ms()?);
             let now = active_session(&mut tx, auth, now).await?;
-            let current: Option<(Option<Vec<u8>>, String)> = sqlx::query_as("SELECT passkey_credential_id,auth_method FROM nds_sessions WHERE token_digest=$1 AND user_id=$2 AND tenant_id=$3 AND expires_at_ms>$4")
+            let current: Option<(Option<Vec<u8>>, String)> = sqlx::query_as("SELECT passkey_credential_id,auth_method FROM nds_sessions WHERE token_digest=$1 AND user_id=$2 AND tenant_id=$3 AND expires_at_ms>$4 AND NOT revoked")
                 .bind(auth.binding.0.as_slice()).bind(auth.session.owner.user_id.as_str()).bind(auth.session.owner.tenant_id.as_str()).bind(i64::try_from(now).map_err(unavailable)?)
                 .fetch_optional(&mut *tx).await.map_err(unavailable)?;
             let (credential, method) = current.ok_or(IdentityError::Denied)?;

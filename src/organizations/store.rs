@@ -7,12 +7,12 @@ use nddev_device_sync_application::identity::{
 };
 use nddev_device_sync_domain::{
     organizations::{
-        CompanyRole,
+        CompanyRole, MAX_ORGANIZATIONS_PER_PRINCIPAL,
         invitations::{Invitation, InvitationMetadata, InvitationStatus},
     },
     sync::MAX_REVISION,
 };
-use sqlx::{Row, postgres::PgRow};
+use sqlx::{Acquire, Row, postgres::PgRow};
 mod control;
 pub use control::Store;
 
@@ -55,13 +55,18 @@ fn invitation(row: &PgRow) -> Result<Invitation, IdentityError> {
                 .map_err(unavailable)?,
         )
         .map_err(unavailable)?,
+        company_id: tenant,
         issuer: Owner {
             user_id: UserId::new(
                 row.try_get::<String, _>("issuer_user_id")
                     .map_err(unavailable)?,
             )
             .map_err(unavailable)?,
-            tenant_id: tenant.clone(),
+            tenant_id: TenantId::new(
+                row.try_get::<String, _>("issuer_tenant_id")
+                    .map_err(unavailable)?,
+            )
+            .map_err(unavailable)?,
         },
         recipient: Owner {
             user_id: UserId::new(
@@ -69,7 +74,11 @@ fn invitation(row: &PgRow) -> Result<Invitation, IdentityError> {
                     .map_err(unavailable)?,
             )
             .map_err(unavailable)?,
-            tenant_id: tenant,
+            tenant_id: TenantId::new(
+                row.try_get::<String, _>("recipient_tenant_id")
+                    .map_err(unavailable)?,
+            )
+            .map_err(unavailable)?,
         },
         role: role(row.try_get("company_role").map_err(unavailable)?)?,
         issued_at_ms: unsigned(row.try_get("issued_at_ms").map_err(unavailable)?)?,
@@ -98,16 +107,26 @@ async fn recipient_available(
     tx: &mut Tx<'_>,
     binding: &[u8],
     owner: &Owner,
+    company: &TenantId,
 ) -> Result<bool, IdentityError> {
     let current = sqlx::query(
-        "SELECT user_id,tenant_id,membership_active FROM nds_owner WHERE email_binding=$1",
+        "SELECT o.user_id,o.tenant_id,COALESCE(m.membership_active,FALSE) AS membership_active FROM nds_owner o LEFT JOIN nds_company_memberships m ON m.user_id=o.user_id AND m.tenant_id=$2 WHERE o.email_binding=$1",
     )
     .bind(binding)
+    .bind(company.as_str())
     .fetch_optional(&mut **tx)
     .await
     .map_err(unavailable)?;
     match current {
-        None => Ok(true),
+        None => {
+            let collision: bool =
+                sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM nds_owner WHERE user_id=$1)")
+                    .bind(owner.user_id.as_str())
+                    .fetch_one(&mut **tx)
+                    .await
+                    .map_err(unavailable)?;
+            Ok(!collision)
+        }
         Some(row) => Ok(row.try_get::<String, _>("user_id").map_err(unavailable)?
             == owner.user_id.as_str()
             && row.try_get::<String, _>("tenant_id").map_err(unavailable)?
@@ -151,13 +170,22 @@ pub(crate) async fn invitation_for_email(
         return Ok(None);
     }
     let mut value = invitation(&row)?;
-    let issuer = identity::membership(tx, &value.metadata().issuer).await?;
+    let issuer =
+        identity::membership_in(tx, &value.metadata().issuer, &value.metadata().company_id).await?;
     let recipient = value.metadata().recipient.clone();
     let admitted = value
         .prepare_authentication(&recipient, &issuer, now)
         .is_ok();
     persist_status(tx, &value).await?;
-    if !admitted || !recipient_available(tx, &issue.owner_binding.0, &recipient).await? {
+    if !admitted
+        || !recipient_available(
+            tx,
+            &issue.owner_binding.0,
+            &recipient,
+            &value.metadata().company_id,
+        )
+        .await?
+    {
         return Ok(None);
     }
     Ok(Some(proof.id.clone()))
@@ -169,7 +197,7 @@ pub(crate) async fn accept_invitation(
     tx: &mut Tx<'_>,
     id: &str,
     now: u64,
-) -> Result<Owner, IdentityError> {
+) -> Result<(Owner, TenantId), IdentityError> {
     let row =
         sqlx::query("SELECT * FROM nds_company_invitations WHERE invitation_id=$1 FOR UPDATE")
             .bind(id)
@@ -178,7 +206,8 @@ pub(crate) async fn accept_invitation(
             .map_err(unavailable)?
             .ok_or(IdentityError::Denied)?;
     let mut value = invitation(&row)?;
-    let issuer = identity::membership(tx, &value.metadata().issuer).await?;
+    let issuer =
+        identity::membership_in(tx, &value.metadata().issuer, &value.metadata().company_id).await?;
     let recipient = value.metadata().recipient.clone();
     if value
         .prepare_authentication(&recipient, &issuer, now)
@@ -188,7 +217,8 @@ pub(crate) async fn accept_invitation(
         return Err(IdentityError::Denied);
     }
     let binding: Vec<u8> = row.try_get("recipient_binding").map_err(unavailable)?;
-    if !recipient_available(tx, &binding, &recipient).await? {
+    let company = value.metadata().company_id.clone();
+    if !recipient_available(tx, &binding, &recipient, &company).await? {
         return Err(IdentityError::Denied);
     }
     let next = value
@@ -198,28 +228,47 @@ pub(crate) async fn accept_invitation(
         &row.try_get::<String, _>("recipient_email")
             .map_err(unavailable)?,
     )?;
-    let changed=sqlx::query("INSERT INTO nds_owner(user_id,tenant_id,email_binding,email,company_role,membership_active) VALUES($1,$2,$3,$4,$5,TRUE) ON CONFLICT(user_id) DO UPDATE SET company_role=EXCLUDED.company_role,membership_active=TRUE,member_revision=nds_owner.member_revision+1 WHERE nds_owner.tenant_id=EXCLUDED.tenant_id AND nds_owner.email_binding=EXCLUDED.email_binding AND NOT nds_owner.membership_active AND nds_owner.member_revision<$6")
-        .bind(recipient.user_id.as_str()).bind(recipient.tenant_id.as_str()).bind(&binding).bind(email.as_str()).bind(role_text(next.role)).bind(MAX_REVISION as i64)
+    // Preserve OTP-attempt consumption on denial, while activation itself is
+    // atomic even for a known business failure after an intermediate write.
+    let mut savepoint = tx.begin().await.map_err(unavailable)?;
+    let result = async {
+        let tx = &mut savepoint;
+    // Older pending invitations may predate identity reservation. Establish only
+    // their exact retained tuple; a conflicting historical reservation refuses.
+    sqlx::query("INSERT INTO nds_owner(user_id,tenant_id,email_binding,email,verified) VALUES($1,$2,$3,$4,FALSE) ON CONFLICT DO NOTHING")
+        .bind(recipient.user_id.as_str()).bind(recipient.tenant_id.as_str()).bind(&binding).bind(email.as_str())
+        .execute(&mut **tx).await.map_err(unavailable)?;
+    if !recipient_available(tx, &binding, &recipient, &company).await? { return Err(IdentityError::Denied); }
+    let exists: bool = sqlx::query_scalar("SELECT EXISTS(SELECT 1 FROM nds_company_memberships WHERE tenant_id=$1 AND user_id=$2)")
+        .bind(company.as_str()).bind(recipient.user_id.as_str()).fetch_one(&mut **tx).await.map_err(unavailable)?;
+    if !exists {
+        let count: i64 = sqlx::query_scalar("SELECT count(*) FROM nds_company_memberships WHERE user_id=$1")
+            .bind(recipient.user_id.as_str()).fetch_one(&mut **tx).await.map_err(unavailable)?;
+        if count >= MAX_ORGANIZATIONS_PER_PRINCIPAL as i64 { return Err(IdentityError::Capacity); }
+    }
+    let changed=sqlx::query("INSERT INTO nds_company_memberships(tenant_id,user_id,company_role,membership_active,member_revision) VALUES($1,$2,$3,TRUE,1) ON CONFLICT(tenant_id,user_id) DO UPDATE SET company_role=EXCLUDED.company_role,membership_active=TRUE,member_revision=nds_company_memberships.member_revision+1 WHERE NOT nds_company_memberships.membership_active AND nds_company_memberships.member_revision<$4")
+        .bind(company.as_str()).bind(recipient.user_id.as_str()).bind(role_text(next.role)).bind(MAX_REVISION as i64)
         .execute(&mut **tx).await.map_err(unavailable)?;
     if changed.rows_affected() != 1 {
         return Err(IdentityError::Denied);
     }
-    // Reactivation preserves the user's data/key identity, never old authority.
-    // A session that was not presented while membership was inactive must not
-    // become valid again after accepting a new invitation.
-    let sessions: Vec<Vec<u8>> = sqlx::query_scalar(
-        "DELETE FROM nds_sessions WHERE user_id=$1 AND tenant_id=$2 RETURNING token_digest",
-    )
-    .bind(recipient.user_id.as_str())
-    .bind(recipient.tenant_id.as_str())
-    .fetch_all(&mut **tx)
-    .await
-    .map_err(unavailable)?;
-    for session in sessions {
-        crate::screen::store::retire_session(tx, &session)
-            .await
-            .map_err(unavailable)?;
-    }
+    // Only the proven invitation plus recipient OTP establishes a reservation.
+    // Existing personal sessions/keys are unaffected. The incremented membership
+    // revision, not a replacement session, fences earlier organization commands.
+    let established = sqlx::query("UPDATE nds_owner SET verified=TRUE WHERE user_id=$1 AND tenant_id=$2 AND email_binding=$3")
+        .bind(recipient.user_id.as_str()).bind(recipient.tenant_id.as_str()).bind(&binding).execute(&mut **tx).await.map_err(unavailable)?;
+    if established.rows_affected()!=1 { return Err(IdentityError::Denied); }
     persist_status(tx, &value).await?;
-    Ok(recipient)
+    Ok((recipient, company))
+    }.await;
+    match result {
+        Ok(accepted) => {
+            savepoint.commit().await.map_err(unavailable)?;
+            Ok(accepted)
+        }
+        Err(error) => {
+            savepoint.rollback().await.map_err(unavailable)?;
+            Err(error)
+        }
+    }
 }
