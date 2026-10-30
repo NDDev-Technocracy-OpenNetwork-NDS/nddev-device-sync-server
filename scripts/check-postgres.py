@@ -2,6 +2,7 @@
 """Disposable loopback-only PostgreSQL acceptance; never uses operator credentials."""
 import json
 import argparse
+import hashlib
 import os
 from pathlib import Path
 import secrets
@@ -18,6 +19,8 @@ from telemetry_acceptance import TelemetryValidator
 
 arguments = argparse.ArgumentParser(description="Real isolated PostgreSQL/SMTP acceptance or a bounded client fixture")
 arguments.add_argument("--fixture-receipt", type=Path)
+arguments.add_argument("--fixture-server", type=Path, help="Explicit precompiled server artifact for an owned native client fixture")
+arguments.add_argument("--fixture-server-sha256", help="Required SHA-256 of the explicit fixture server artifact")
 arguments.add_argument("--observability-config", type=Path, help="Explicit owned loopback collector fixture configuration")
 arguments.add_argument("--fixture-seconds", type=int, default=1200)
 arguments.add_argument("--fixture-tls", action="store_true", help="Owned ephemeral localhost TLS certificate for browser release acceptance")
@@ -27,6 +30,19 @@ arguments.add_argument("--upgrade-from", type=Path, help="Existing immutable sch
 arguments.add_argument("--upgrade-company", action="store_true", help="Also qualify production company migration SQL with encrypted witnesses in a separate owned database (cryptography50.0.2 required)")
 arguments.add_argument("--fixture-web-root", type=Path, help="Owned manifest-verified browser test bundle, served by the real server")
 options = arguments.parse_args()
+if options.fixture_server is not None or options.fixture_server_sha256 is not None:
+    binary = options.fixture_server
+    digest = options.fixture_server_sha256
+    if options.fixture_receipt is None or binary is None or digest is None:
+        arguments.error("a precompiled server requires an owned fixture and its SHA-256")
+    if (not binary.is_absolute() or binary.is_symlink() or not binary.is_file()
+            or binary.resolve().is_relative_to(Path(__file__).resolve().parent.parent)
+            or not 0 < binary.stat().st_size <= 1024**3
+            or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest)):
+        arguments.error("fixture server must be an explicit bounded artifact outside the repository")
+    with binary.open("rb") as source:
+        if hashlib.file_digest(source, "sha256").hexdigest() != digest:
+            arguments.error("fixture server SHA-256 differs")
 if options.upgrade_from is not None:
     if not options.upgrade_from.is_absolute() or not options.upgrade_from.is_file() or options.upgrade_from.resolve().is_relative_to(Path(__file__).resolve().parent.parent):
         arguments.error("upgrade source must be an explicit existing binary outside the repository")
@@ -44,7 +60,7 @@ if options.fixture_receipt is not None:
 
 ROOT = Path(__file__).resolve().parent.parent
 IMAGE = "postgres:18.6-bookworm@sha256:afc7e2d441324c0388fa80c3d24f733b4194a4eb7f47dd8ee2b08eb1a24a647c"
-BINARY = Path(json.loads(subprocess.check_output(
+BINARY = options.fixture_server or Path(json.loads(subprocess.check_output(
     ["cargo", "metadata", "--locked", "--no-deps", "--format-version", "1"],
     cwd=ROOT, text=True, timeout=30))["target_directory"]) / "debug/nddev-device-sync-server"
 name = "nds-db-check-" + uuid.uuid4().hex[:12]
