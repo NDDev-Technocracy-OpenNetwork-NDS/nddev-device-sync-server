@@ -102,8 +102,46 @@ def check_enrollment(request, token, second_session, restart, directory, sql):
     assert sql("SELECT to_jsonb(d)::text FROM nds_devices d ORDER BY device_id").stdout == retained_device, "personal projection changed retained device ownership or proof"
     assert request("/v2/devices?limit=0", token=token)[0] == 400
     assert request("/v2/devices?cursor=devices.01", token=token)[0] == 400
+    # Device control policy (ADR 0018): a new enrollment starts as fullauto.
+    policy_path = "/v3/personal/devices/" + first["device_id"] + "/policy"
+    def policy(mode, purposes, revision):
+        return {"context": context, "device_id": first["device_id"],
+                "policy": {"mode": mode, "purposes": purposes, "revision": revision}}
+    assert request(policy_path)[0] == 401
+    assert request(policy_path, token=token) == (200, policy("fullauto", ["desktop"], 1))
+    # Every active session of the same owner observes the same device policy.
+    assert request(policy_path, token=other) == (200, policy("fullauto", ["desktop"], 1))
+    # Unknown and non-owned devices share one request refusal (the store filters by
+    # both tenant and user), never a session failure.
+    assert request("/v3/personal/devices/" + uuid.uuid4().hex + "/policy", token=token) == (400, {"error": "invalid_request"})
+    narrowed = {"expected_revision": 1, "mode": "manual", "purposes": ["desktop", "dev-desktop"]}
+    assert request(policy_path, narrowed, token=other, method="PUT") == (200, policy("manual", ["dev-desktop", "desktop"], 2))
+    # The first session's stale draft cannot overwrite the newer revision.
+    assert request(policy_path, narrowed, token=token, method="PUT") == (409, {"error": "operation_conflict"})
+    for invalid in (narrowed | {"expected_revision": 2, "purposes": []}, narrowed | {"expected_revision": 2, "purposes": ["admin"]},
+                    narrowed | {"expected_revision": 2, "purposes": ["desktop", "desktop"]}, narrowed | {"expected_revision": 2, "mode": "auto"},
+                    narrowed | {"expected_revision": 0}, narrowed | {"expected_revision": 2, "device_id": "injected"}):
+        assert request(policy_path, invalid, token=token, method="PUT")[0] == 400
+    widened = {"expected_revision": 2, "mode": "fullauto", "purposes": ["dev-desktop"]}
+    # The session stays valid, but widening needs a recent sign-in proof.
+    sql("UPDATE nds_sessions SET authenticated_at_ms=authenticated_at_ms-600000")
+    assert request(policy_path, widened, token=token, method="PUT") == (403, {"error": "recent_authentication_required"})
+    assert request(policy_path, token=token) == (200, policy("manual", ["dev-desktop", "desktop"], 2))
+    reclassified = {"expected_revision": 2, "mode": "manual", "purposes": ["server-dev-desktop"]}
+    assert request(policy_path, reclassified, token=token, method="PUT") == (200, policy("manual", ["server-dev-desktop"], 3))
+    sql("UPDATE nds_sessions SET authenticated_at_ms=authenticated_at_ms+600000")
+    widened["expected_revision"] = 3
+    assert request(policy_path, widened, token=token, method="PUT") == (200, policy("fullauto", ["dev-desktop"], 4))
+    restart()
+    assert request(policy_path, token=token) == (200, policy("fullauto", ["dev-desktop"], 4))
+    assert sql("SELECT to_jsonb(d)::text FROM nds_devices d ORDER BY device_id").stdout == retained_device, "policy replacement changed device identity, key or proof"
+    for statement in ("UPDATE nds_device_policies SET device_id=device_id WHERE false", "DELETE FROM nds_device_policies WHERE false"):
+        assert sql(statement, "nds_runtime", check=False).returncode != 0
+    assert sql("UPDATE nds_device_policies SET control_mode=control_mode,purposes=purposes,policy_revision=policy_revision WHERE false", "nds_runtime").returncode == 0
     assert challenge(public)[0] == 400, "active key was registered twice"
     assert request("/v2/devices/" + first["device_id"], token=token, method="DELETE")[0] == 204
+    assert request(policy_path, {"expected_revision": 4, "mode": "manual", "purposes": ["desktop"]}, token=token, method="PUT") == (400, {"error": "invalid_request"}), "revoked device policy changed"
+    assert request(policy_path, token=token)[1]["policy"]["revision"] == 4
     assert request("/v2/devices/" + first["device_id"], token=token, method="DELETE")[0] == 204
     assert challenge(public)[0] == 400, "revoked key was silently reassigned"
     assert request("/v2/devices", token=token)[1]["devices"][0]["status"] == "revoked"

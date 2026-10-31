@@ -1,7 +1,7 @@
 // Generated; do not edit. AGPL-3.0-only. NDDev OpenNetwork — https://nddev.ai
 // Source: NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-protocol/contracts/v3/personal.schema.json
-// Schema SHA-256: 51248701d829e8c1ca9197bb694a1760131ce84c313d9ad875425ab9e2113e15
-// Generator script SHA-256: 4d114bb4979e5a2d816875ae362b982fd3dca76513ed82cf3ad8aa2d90c015de
+// Schema SHA-256: 115693d85e393b251d65d52bfc8aaa250f80532b5497e1dfbf78bd4925469896
+// Generator script SHA-256: 7d14f49ab7a94ec68910c3e15a158af1c23626ec52abebac537c8bc04fcee73d
 // Tool: quicktype-core 26.0.0; dependency lock SHA-256: ec1d8541bcae0771e2fe0e95e572f60898fd62e6e31fbfbea80451d244aff5b9
 // DTO generation is not schema, authorization or cryptographic validation.
 
@@ -81,6 +81,73 @@ pub enum Status {
     Active,
 
     Revoked,
+}
+
+/// Current policy of one device owned by the authenticated principal. Device identity, key
+/// and proof are unaffected by policy revisions.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct PersonalDevicePolicy {
+    pub context: PersonalContext,
+
+    pub device_id: String,
+
+    pub policy: DevicePolicy,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DevicePolicy {
+    pub mode: ControlMode,
+
+    pub purposes: Vec<DevicePurpose>,
+
+    pub revision: i64,
+}
+
+/// Authenticated device action-admission mode (ADR 0018). Fullauto admits supported system
+/// tools without an NDS checklist; manual keeps the owner's explicit module configuration.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlMode {
+    Fullauto,
+
+    Manual,
+}
+
+/// Intended workload profile from the architecture's device placement table. Describes
+/// intent only; never a grant.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum DevicePurpose {
+    #[serde(rename = "build-dev-desktop")]
+    BuildDevDesktop,
+
+    Desktop,
+
+    #[serde(rename = "dev-desktop")]
+    DevDesktop,
+
+    #[serde(rename = "server-desktop")]
+    ServerDesktop,
+
+    #[serde(rename = "server-dev-desktop")]
+    ServerDevDesktop,
+
+    #[serde(rename = "server-hosting")]
+    ServerHosting,
+}
+
+/// Compare-and-set replacement by the device owner. Widening manual into fullauto requires a
+/// recent sign-in.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DevicePolicyUpdate {
+    pub expected_revision: i64,
+
+    pub mode: ControlMode,
+
+    pub purposes: Vec<DevicePurpose>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]

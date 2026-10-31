@@ -20,6 +20,10 @@ pub fn routes() -> Router<AppState> {
         .route("/v2/devices/enrollments", post(complete))
         .route("/v2/devices", get(list))
         .route("/v3/personal/devices", get(list_personal))
+        .route(
+            "/v3/personal/devices/{device_id}/policy",
+            get(get_policy).put(put_policy),
+        )
         .route("/v2/devices/{device_id}", delete(revoke))
 }
 pub struct ApiError(DeviceError);
@@ -47,6 +51,11 @@ impl IntoResponse for ApiError {
             DeviceError::Unavailable => (
                 StatusCode::SERVICE_UNAVAILABLE,
                 dto::ErrorEnum::DependencyUnavailable,
+            ),
+            DeviceError::Conflict => (StatusCode::CONFLICT, dto::ErrorEnum::OperationConflict),
+            DeviceError::RecentAuthenticationRequired => (
+                StatusCode::FORBIDDEN,
+                dto::ErrorEnum::RecentAuthenticationRequired,
             ),
         };
         tracing::warn!(module = "devices", scope = "http", event.name="device.request.rejected",error.type=%self.0,outcome="rejected");
@@ -282,4 +291,93 @@ async fn revoke(
     service(&state)?.revoke(&authorization, &id, now).await?;
     tracing::info!(module = "devices", scope = "http", event.name="device.revoked",device.id=%id.as_str(),user.id=%authorization.session.owner.user_id.as_str(),tenant.id=%authorization.session.owner.tenant_id.as_str(),outcome="ok");
     Ok(StatusCode::NO_CONTENT)
+}
+
+fn policy_response(value: PersonalDevicePolicy) -> personal_dto::PersonalDevicePolicy {
+    personal_dto::PersonalDevicePolicy {
+        context: personal_dto::PersonalContext {
+            principal_id: value.context.principal_id().as_str().into(),
+            space: personal_dto::PersonalSpace {
+                kind: personal_dto::Kind::Personal,
+                id: value.context.space_id().as_str().into(),
+            },
+        },
+        device_id: value.device.into(),
+        policy: personal_dto::DevicePolicy {
+            mode: match value.policy.mode() {
+                ControlMode::Fullauto => personal_dto::ControlMode::Fullauto,
+                ControlMode::Manual => personal_dto::ControlMode::Manual,
+            },
+            purposes: value
+                .policy
+                .purposes()
+                .iter()
+                .map(|purpose| match purpose {
+                    DevicePurpose::ServerHosting => personal_dto::DevicePurpose::ServerHosting,
+                    DevicePurpose::ServerDevDesktop => {
+                        personal_dto::DevicePurpose::ServerDevDesktop
+                    }
+                    DevicePurpose::ServerDesktop => personal_dto::DevicePurpose::ServerDesktop,
+                    DevicePurpose::BuildDevDesktop => personal_dto::DevicePurpose::BuildDevDesktop,
+                    DevicePurpose::DevDesktop => personal_dto::DevicePurpose::DevDesktop,
+                    DevicePurpose::Desktop => personal_dto::DevicePurpose::Desktop,
+                })
+                .collect(),
+            // Bounded to MAX_POLICY_REVISION, which fits i64 exactly.
+            revision: value.policy.revision() as i64,
+        },
+    }
+}
+async fn get_policy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+) -> Result<Json<personal_dto::PersonalDevicePolicy>, ApiError> {
+    let now = now()?;
+    let authorization = authorization(&state, &headers, now).await?;
+    let id = DeviceId::new(id).map_err(|_| DeviceError::InvalidInput)?;
+    let value = service(&state)?.policy(&authorization, &id, now).await?;
+    Ok(Json(policy_response(value)))
+}
+async fn put_policy(
+    State(state): State<AppState>,
+    headers: HeaderMap,
+    Path(id): Path<String>,
+    body: Result<Json<personal_dto::DevicePolicyUpdate>, JsonRejection>,
+) -> Result<Json<personal_dto::PersonalDevicePolicy>, ApiError> {
+    let now = now()?;
+    let authorization = authorization(&state, &headers, now).await?;
+    let id = DeviceId::new(id).map_err(|_| DeviceError::InvalidInput)?;
+    let Json(body) = body.map_err(|_| DeviceError::InvalidInput)?;
+    let requested = body.purposes.len();
+    let purposes = body
+        .purposes
+        .into_iter()
+        .map(|purpose| match purpose {
+            personal_dto::DevicePurpose::ServerHosting => DevicePurpose::ServerHosting,
+            personal_dto::DevicePurpose::ServerDevDesktop => DevicePurpose::ServerDevDesktop,
+            personal_dto::DevicePurpose::ServerDesktop => DevicePurpose::ServerDesktop,
+            personal_dto::DevicePurpose::BuildDevDesktop => DevicePurpose::BuildDevDesktop,
+            personal_dto::DevicePurpose::DevDesktop => DevicePurpose::DevDesktop,
+            personal_dto::DevicePurpose::Desktop => DevicePurpose::Desktop,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    // Duplicates are a malformed request, never silently collapsed.
+    if purposes.len() != requested {
+        return Err(DeviceError::InvalidInput.into());
+    }
+    let change = PolicyChange {
+        expected_revision: u64::try_from(body.expected_revision)
+            .map_err(|_| DeviceError::InvalidInput)?,
+        mode: match body.mode {
+            personal_dto::ControlMode::Fullauto => ControlMode::Fullauto,
+            personal_dto::ControlMode::Manual => ControlMode::Manual,
+        },
+        purposes,
+    };
+    let value = service(&state)?
+        .replace_policy(&authorization, &id, change, now)
+        .await?;
+    tracing::info!(module = "devices", scope = "http", event.name="device.policy.replaced",device.id=%id.as_str(),user.id=%authorization.session.owner.user_id.as_str(),tenant.id=%authorization.session.owner.tenant_id.as_str(),outcome="ok");
+    Ok(Json(policy_response(value)))
 }

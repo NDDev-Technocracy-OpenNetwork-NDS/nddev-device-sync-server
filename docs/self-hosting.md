@@ -45,6 +45,7 @@ Session writers, revocation, observed expiry and enrollment authorization share
 one bounded PostgreSQL advisory transaction lock. Runtime has no session UPDATE
 grant and cannot extend expiry or alter a stored session binding.
 Device rows have no runtime DELETE grant, preserving revoked identities.
+Device policies allow runtime INSERT and UPDATE of mode, purposes and revision only.
 Administrative access stays with PostgreSQL; observability credentials are not
 provisioned until the observability service exists.
 
@@ -204,6 +205,25 @@ an organization administrator still receives only their own personal devices.
 Upgrade the server before these clients: absence of the new route is an explicit
 compatibility refusal, with no context-free inventory fallback. Previously
 locked clients retain `/v2/devices` unchanged.
+### Device control policy
+
+Schema 16 adds one control policy per device (ADR 0018): purpose profiles and a
+`fullauto`/`manual` mode with a revision. It is stored separately from the
+device row, so policy changes never alter the device ID, owner, public key or
+proof. The migration gives every existing device `manual`/`desktop` at revision 1,
+keeping its explicit module checklist; new enrollments start as
+`fullauto`/`desktop`. Runtime may only update mode, purposes and revision.
+
+GET `/v3/personal/devices/{device_id}/policy` returns an owned device's policy
+with the personal context. PUT replaces it by compare-and-set on
+`expected_revision` (`409 operation_conflict` when stale). Only the active owner
+changes an active device; widening manual into fullauto needs a sign-in within
+the recent-proof window (`403 recent_authentication_required`). Unknown, foreign
+and revoked devices share one `400 invalid_request` refusal, which never signals
+loss of the caller's own session. Upgrade the server before clients that read
+the policy; clients treat a missing route as "no policy observed" and keep the
+manual checklist.
+
 If a completion response is uncertain, retain the local key and inspect the
 owned device list. Enrollment establishes device identity. Subsequent encrypted
 sync and vault-key delivery require both an active owner session and signed,
