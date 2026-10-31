@@ -1698,7 +1698,7 @@ dependencies = [
 [[package]]
 name = "nddev-device-sync-application"
 version = "0.0.1-alpha.21"
-source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git?rev=9b7b54ad0eb822ebc6924d058b283b104513f6e7#9b7b54ad0eb822ebc6924d058b283b104513f6e7"
+source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git?rev=088e658126c7aabe637b782c1a152f90fce0b47f#088e658126c7aabe637b782c1a152f90fce0b47f"
 dependencies = [
  "nddev-device-sync-domain",
 ]
@@ -1706,7 +1706,7 @@ dependencies = [
 [[package]]
 name = "nddev-device-sync-domain"
 version = "0.0.12"
-source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git?rev=9b7b54ad0eb822ebc6924d058b283b104513f6e7#9b7b54ad0eb822ebc6924d058b283b104513f6e7"
+source = "git+https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-core.git?rev=088e658126c7aabe637b782c1a152f90fce0b47f#088e658126c7aabe637b782c1a152f90fce0b47f"
 dependencies = [
  "serde",
  "thiserror 2.0.21",
