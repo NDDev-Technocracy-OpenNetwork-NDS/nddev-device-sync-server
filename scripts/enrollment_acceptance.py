@@ -109,12 +109,14 @@ def check_enrollment(request, token, second_session, restart, directory, sql):
                 "policy": {"mode": mode, "purposes": purposes, "revision": revision}}
     assert request(policy_path)[0] == 401
     assert request(policy_path, token=token) == (200, policy("fullauto", ["desktop"], 1))
-    # Foreign and unknown devices share one request refusal, never a session failure.
-    assert request(policy_path, token=other) == (400, {"error": "invalid_request"}), "another owner observed a foreign device policy"
+    # Every active session of the same owner observes the same device policy.
+    assert request(policy_path, token=other) == (200, policy("fullauto", ["desktop"], 1))
+    # Unknown and non-owned devices share one request refusal (the store filters by
+    # both tenant and user), never a session failure.
     assert request("/v3/personal/devices/" + uuid.uuid4().hex + "/policy", token=token) == (400, {"error": "invalid_request"})
     narrowed = {"expected_revision": 1, "mode": "manual", "purposes": ["desktop", "dev-desktop"]}
-    assert request(policy_path, narrowed, token=other, method="PUT") == (400, {"error": "invalid_request"})
-    assert request(policy_path, narrowed, token=token, method="PUT") == (200, policy("manual", ["dev-desktop", "desktop"], 2))
+    assert request(policy_path, narrowed, token=other, method="PUT") == (200, policy("manual", ["dev-desktop", "desktop"], 2))
+    # The first session's stale draft cannot overwrite the newer revision.
     assert request(policy_path, narrowed, token=token, method="PUT") == (409, {"error": "operation_conflict"})
     for invalid in (narrowed | {"expected_revision": 2, "purposes": []}, narrowed | {"expected_revision": 2, "purposes": ["admin"]},
                     narrowed | {"expected_revision": 2, "purposes": ["desktop", "desktop"]}, narrowed | {"expected_revision": 2, "mode": "auto"},
