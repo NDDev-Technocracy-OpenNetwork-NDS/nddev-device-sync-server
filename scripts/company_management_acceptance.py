@@ -1,7 +1,7 @@
 """Real signed administrative commands, SMTP invitations and recipient OTP.
 
 All peers/mailboxes/data belong to the existing disposable acceptance fixture.
-The RDS check proves HTTP control metadata retirement, not native screen capture.
+The remote-screen check proves HTTP control metadata retirement, not native screen capture.
 """
 import base64
 from concurrent.futures import ThreadPoolExecutor
@@ -348,7 +348,7 @@ def check_company_management(*, signed, request, sql, challenge, verify, enroll,
     # Membership removal retires a cross-user view and keeps personal Vault rows.
     _, view = create_view(authority,host)
     ready(view)
-    print("Company RDS authority passed: minimal signed32-device discovery, separate users, signed binding policy, own-device access, cross-user admin access, cross-company/user denial, participant-only artifacts, shared host admission, restart, demotion/repromotion and original-viewer-session revocation.", flush=True)
+    print("Company remote-screen authority passed: minimal signed32-device discovery, separate users, signed binding policy, own-device access, cross-user admin access, cross-company/user denial, participant-only artifacts, shared host admission, restart, demotion/repromotion and original-viewer-session revocation.", flush=True)
     revision = member_row(authority, member[2])["revision"]
     payload, removed = change(authority, member[2], revision)
     assert removed[0] == 200 and removed[1]["active"] is False

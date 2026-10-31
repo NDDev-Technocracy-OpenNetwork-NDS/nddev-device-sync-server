@@ -41,11 +41,11 @@ Organization memberships preserve the original personal user/device/Vault
 bindings. One principal can create and join multiple organizations; each scoped
 read or immutable command captures the exact membership revision. Personal
 data remains owner-only, including for administrators. The administrative API and
-SMTP invitation/OTP path are implemented. RDS control metadata permits current
+SMTP invitation/OTP path are implemented. Remote-screen control metadata (the legacy `/v2/rds` wire) permits current
 original-company administrators to request another member's device while retaining
 participant-only grants, current-session/membership revalidation and signed
 device discovery bounded to 32 targets. Platform capture and rendering are
-qualified by their RDS/client consumers. Global monitoring
+qualified by the remote module and its client consumers. Global monitoring
 controls remain bound to the configured deployment operator, independently of
 company roles; ordinary clients use the narrow export-policy endpoint.
 

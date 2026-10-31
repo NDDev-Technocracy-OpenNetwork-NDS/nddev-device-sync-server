@@ -146,7 +146,7 @@ pub(crate) async fn membership_in(
 }
 
 /// An established personal session survives an organization membership change.
-/// Organization/RDS administration checks current membership separately.
+/// Organization/remote-screen administration checks current membership separately.
 pub(crate) async fn session_expiry(
     tx: &mut Tx<'_>,
     owner: &Owner,

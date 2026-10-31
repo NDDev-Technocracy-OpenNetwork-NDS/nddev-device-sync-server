@@ -524,9 +524,9 @@ submitted mutation had no effect.
 
 Legacy `/v2/company` reads remain confined to the original company. Legacy
 mutations without a captured revision refuse; clients must adopt the v3 contract
-explicitly. Existing v2 RDS cross-user control remains original-company scoped,
+explicitly. Existing v2 remote-screen (`/v2/rds`) cross-user control remains original-company scoped,
 while personal own-device access is independent of organization membership.
-This transition does not add cross-organization RDS or shared Vault-key delivery.
+This transition does not add cross-organization remote-screen or shared Vault-key delivery.
 
 Mutations carry a canonical UUIDv7 `operation_id`; its timestamp fixes a
 five-minute retry window, with at most sixty seconds of future clock skew.
