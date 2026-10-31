@@ -61,7 +61,7 @@ impl IntoResponse for ApiError {
             }
             Self::Screen(_) => (StatusCode::BAD_REQUEST, "invalid_request"),
         };
-        tracing::warn!(module="rds",scope="http",event.name="rds.request.rejected",error.type=code,outcome="rejected");
+        tracing::warn!(module="remote",scope="http",event.name="remote.request.rejected",error.type=code,outcome="rejected");
         let mut response = (status, Json(serde_json::json!({"error":code}))).into_response();
         if status == StatusCode::SERVICE_UNAVAILABLE {
             response
@@ -119,7 +119,7 @@ fn empty(body: &[u8]) -> Result<(), ScreenError> {
 }
 fn done(operation: &'static str) {
     tracing::info!(
-        module = "rds",
+        module = "remote",
         scope = "http",
         event.name = operation,
         outcome = "ok"
@@ -219,8 +219,8 @@ async fn targets(
         })
         .collect();
     tracing::info!(
-        event.name = "rds.targets.completed",
-        module = "rds",
+        event.name = "remote.targets.completed",
+        module = "remote",
         scope = "http",
         outcome = "ok",
         user.id = auth.session.owner.user_id.as_str(),
@@ -261,7 +261,7 @@ async fn bind(
     let result = service(&state)?
         .bind(&auth, signed, claim, decoded(&input.signature)?, now)
         .await?;
-    done("rds.bind.completed");
+    done("remote.bind.completed");
     Ok(Json(bound(result)?))
 }
 async fn binding(
@@ -278,7 +278,7 @@ async fn binding(
     let result = service(&state)?
         .binding(&auth, signed, &id(target)?, now)
         .await?;
-    done("rds.binding.completed");
+    done("remote.binding.completed");
     Ok(Json(dto::ScreenBindingResponse {
         binding: result.map(bound).transpose()?,
     }))
@@ -315,7 +315,7 @@ async fn create(
     let result = service(&state)?
         .create(&auth, signed, request, body.to_vec(), now)
         .await?;
-    done("rds.create.completed");
+    done("remote.create.completed");
     Ok((StatusCode::CREATED, Json(public(result.public())?)))
 }
 async fn incoming(
@@ -329,7 +329,7 @@ async fn incoming(
     let (auth, signed) =
         crate::sync::http::authorize(&state, &headers, "GET", &uri, &body, now).await?;
     let result = service(&state)?.incoming(&auth, signed, now).await?;
-    done("rds.incoming.completed");
+    done("remote.incoming.completed");
     Ok(Json(dto::ScreenIncoming {
         view: result.as_ref().map(|v| public(v.public())).transpose()?,
     }))
@@ -346,7 +346,7 @@ async fn view(
     let (auth, signed) =
         crate::sync::http::authorize(&state, &headers, "GET", &uri, &body, now).await?;
     let (view, grant) = service(&state)?.view(&auth, signed, &id, now).await?;
-    done("rds.view.completed");
+    done("remote.view.completed");
     Ok(Json(dto::ScreenViewResponse {
         view: public(view.public())?,
         native_grant: grant.map(|v| URL_SAFE_NO_PAD.encode(v)),
@@ -366,7 +366,7 @@ async fn ready(
     let result = service(&state)?
         .ready(&auth, signed, &id, grant(&input.native_grant)?, now)
         .await?;
-    done("rds.ready.completed");
+    done("remote.ready.completed");
     Ok(Json(public(result.public())?))
 }
 async fn end(
@@ -381,7 +381,7 @@ async fn end(
     let (auth, signed) =
         crate::sync::http::authorize(&state, &headers, "POST", &uri, &body, now).await?;
     service(&state)?.end(&auth, signed, &id, now).await?;
-    done("rds.end.completed");
+    done("remote.end.completed");
     Ok(StatusCode::NO_CONTENT)
 }
 
