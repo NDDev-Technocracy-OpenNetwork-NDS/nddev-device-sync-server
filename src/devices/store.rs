@@ -126,6 +126,54 @@ pub(crate) fn device(row: &PgRow) -> Result<Device, DeviceError> {
     })
 }
 
+fn purposes(policy: &DevicePolicy) -> Vec<&'static str> {
+    policy
+        .purposes()
+        .iter()
+        .map(|value| value.as_str())
+        .collect()
+}
+fn policy(row: &PgRow) -> Result<DevicePolicy, DeviceError> {
+    let purposes = row
+        .try_get::<Vec<String>, _>("purposes")
+        .map_err(unavailable)?
+        .iter()
+        .map(|value| DevicePurpose::parse(value).map_err(unavailable))
+        .collect::<Result<std::collections::BTreeSet<_>, _>>()?;
+    DevicePolicy::new(
+        ControlMode::parse(row.try_get("control_mode").map_err(unavailable)?)
+            .map_err(unavailable)?,
+        purposes,
+        unsigned(row.try_get("policy_revision").map_err(unavailable)?)?,
+    )
+    .map_err(unavailable)
+}
+async fn insert_policy(
+    tx: &mut Tx<'_>,
+    id: &DeviceId,
+    value: &DevicePolicy,
+) -> Result<(), DeviceError> {
+    sqlx::query("INSERT INTO nds_device_policies(device_id,control_mode,purposes,policy_revision) VALUES ($1,$2,$3,$4)")
+        .bind(id.as_str()).bind(value.mode().as_str()).bind(purposes(value))
+        .bind(i64::try_from(value.revision()).map_err(unavailable)?)
+        .execute(&mut **tx).await.map_err(unavailable)?;
+    Ok(())
+}
+/// Device and policy of one owned device, locked for the rest of the transaction.
+async fn owned_policy(
+    tx: &mut Tx<'_>,
+    owner: &Owner,
+    id: &DeviceId,
+) -> Result<(Device, DevicePolicy), DeviceError> {
+    // Unknown and foreign devices share one refusal; existence is not disclosed.
+    // This is a request refusal, not a session failure: clients treat 401 as
+    // loss of their own authentication.
+    let row = sqlx::query("SELECT d.*,p.control_mode,p.purposes,p.policy_revision FROM nds_devices d JOIN nds_device_policies p USING(device_id) WHERE d.device_id=$1 AND d.user_id=$2 AND d.tenant_id=$3 FOR UPDATE")
+        .bind(id.as_str()).bind(owner.user_id.as_str()).bind(owner.tenant_id.as_str())
+        .fetch_optional(&mut **tx).await.map_err(unavailable)?.ok_or(DeviceError::InvalidInput)?;
+    Ok((device(&row)?, policy(&row)?))
+}
+
 impl DeviceStore for Store {
     async fn issue(
         &self,
@@ -192,6 +240,7 @@ impl DeviceStore for Store {
                 sqlx::query("INSERT INTO nds_devices(device_id,user_id,tenant_id,ordinal,platform,display_name,public_key,status,created_at_ms) VALUES ($1,$2,$3,$4,$5,$6,$7,'active',$8)")
                     .bind(device.id.as_str()).bind(owner.user_id.as_str()).bind(owner.tenant_id.as_str()).bind(i16::try_from(ordinal).map_err(unavailable)?)
                     .bind(platform(device.platform)).bind(device.name.as_str()).bind(device.public_key.0.as_slice()).bind(millis(now)?).execute(&mut *tx).await.map_err(unavailable)?;
+                insert_policy(&mut tx, &device.id, &DevicePolicy::enrolled()).await?;
                 Ok(device)
             }.await;
             finish(tx,outcome).await
@@ -242,5 +291,63 @@ impl DeviceStore for Store {
             }.await;
             finish(tx,outcome).await
         }).await
+    }
+    async fn policy(
+        &self,
+        authorization: &AuthenticatedSession,
+        id: &DeviceId,
+        now: u64,
+    ) -> Result<DevicePolicy, DeviceError> {
+        bounded(async {
+            let mut tx = self.identity.transaction().await.map_err(identity_error)?;
+            let now = clock(now)?;
+            let outcome = async {
+                authorize(&mut tx, authorization, now).await?;
+                Ok(owned_policy(&mut tx, &authorization.session.owner, id)
+                    .await?
+                    .1)
+            }
+            .await;
+            finish(tx, outcome).await
+        })
+        .await
+    }
+    async fn replace_policy(
+        &self,
+        authorization: &AuthenticatedSession,
+        id: &DeviceId,
+        change: PolicyChange,
+        now: u64,
+    ) -> Result<DevicePolicy, DeviceError> {
+        bounded(async {
+            let mut tx = self.identity.transaction().await.map_err(identity_error)?;
+            let now = clock(now)?;
+            let outcome = async {
+                authorize(&mut tx, authorization, now).await?;
+                let (device, current) =
+                    owned_policy(&mut tx, &authorization.session.owner, id).await?;
+                // A revoked device keeps its last policy for inspection only.
+                if device.status != DeviceStatus::Active {
+                    return Err(DeviceError::InvalidInput);
+                }
+                let next = current.replace(
+                    authorization,
+                    &device,
+                    change.expected_revision,
+                    change.mode,
+                    change.purposes,
+                    now,
+                )?;
+                sqlx::query("UPDATE nds_device_policies SET control_mode=$2,purposes=$3,policy_revision=$4 WHERE device_id=$1 AND policy_revision=$5")
+                    .bind(id.as_str()).bind(next.mode().as_str()).bind(purposes(&next))
+                    .bind(i64::try_from(next.revision()).map_err(unavailable)?)
+                    .bind(i64::try_from(current.revision()).map_err(unavailable)?)
+                    .execute(&mut *tx).await.map_err(unavailable)?;
+                Ok(next)
+            }
+            .await;
+            finish(tx, outcome).await
+        })
+        .await
     }
 }

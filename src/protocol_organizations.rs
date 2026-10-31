@@ -1,12 +1,12 @@
 // Generated; do not edit. AGPL-3.0-only. NDDev OpenNetwork — https://nddev.ai
 // Source: NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-protocol/contracts/v3/organizations.schema.json
 // Schema SHA-256: dfe08a5027552c9b009ce9786eabcd62bfa3c75c042a8df2785f39a99ef0b839
-// Generator script SHA-256: 4d114bb4979e5a2d816875ae362b982fd3dca76513ed82cf3ad8aa2d90c015de
+// Generator script SHA-256: 7d14f49ab7a94ec68910c3e15a158af1c23626ec52abebac537c8bc04fcee73d
 // Tool: quicktype-core 26.0.0; dependency lock SHA-256: ec1d8541bcae0771e2fe0e95e572f60898fd62e6e31fbfbea80451d244aff5b9
 // DTO generation is not schema, authorization or cryptographic validation.
 // Dependency https://nddev.ai/schemas/nddev-device-sync/v2/control-plane.schema.json SHA-256: 301f0aa51fa5774216690e257c56186c598b207e465f3284bda8f746146b8cf4
 // Dependency https://nddev.ai/schemas/nddev-device-sync/v2/company.schema.json SHA-256: b0ecd6b70f408e14974f3ae144e8d32a88ba4aee1e777d6bfc6d3d754c4d7a58
-// Dependency https://nddev.ai/schemas/nddev-device-sync/v3/personal.schema.json SHA-256: 51248701d829e8c1ca9197bb694a1760131ce84c313d9ad875425ab9e2113e15
+// Dependency https://nddev.ai/schemas/nddev-device-sync/v3/personal.schema.json SHA-256: 115693d85e393b251d65d52bfc8aaa250f80532b5497e1dfbf78bd4925469896
 
 use serde::{Deserialize, Serialize};
 

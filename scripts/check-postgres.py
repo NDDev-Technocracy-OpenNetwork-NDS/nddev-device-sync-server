@@ -206,12 +206,15 @@ try:
             if upgrade_witness is not None:
                 verify(sql, upgrade_witness)
                 assert sql("SELECT authenticated_at_ms=GREATEST(expires_at_ms-28800000,0) FROM nds_sessions").stdout.strip() == "t"
-        assert sql("SELECT count(*) FROM _sqlx_migrations WHERE success").stdout.strip() == "15"
-        assert sql("SELECT value FROM nddev_schema_meta WHERE key='schema_version'").stdout.strip() == "15"
+        assert sql("SELECT count(*) FROM _sqlx_migrations WHERE success").stdout.strip() == "16"
+        assert sql("SELECT value FROM nddev_schema_meta WHERE key='schema_version'").stdout.strip() == "16"
+        assert sql("SELECT count(*) FROM nds_devices d LEFT JOIN nds_device_policies p USING(device_id) WHERE p.device_id IS NULL").stdout.strip() == "0"
         assert sql("SELECT to_regclass('public.nds_sync_operations') IS NULL").stdout.strip() == "t"
         assert sql("UPDATE public.nds_replica_counters SET admission_version=3 WHERE false", "nds_runtime", check=False).returncode != 0
         if options.upgrade_from is not None:
             assert sql("SELECT value FROM nddev_schema_meta WHERE key='upgrade_acceptance'").stdout.strip() == "retained9"
+            # Devices enrolled before control profiles never widen into fullauto.
+            assert sql("SELECT bool_and(control_mode='manual' AND purposes=ARRAY['desktop']::TEXT[] AND policy_revision=1) AND count(*)=(SELECT count(*) FROM nds_devices) FROM nds_device_policies").stdout.strip() == "t"
             server = subprocess.Popen([options.upgrade_from, "serve"], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
             wait_ready(port, 503)
             server.terminate()
@@ -219,7 +222,7 @@ try:
             assert server.returncode == 0
             server = None
             clean(sql, upgrade_witness)
-            print("Schema9-to15 upgrade passed: seven canonical identity/device/vault/sync rows preserve original columns and decrypt after migration and repeat; new runtime rejects schema9 and old runtime rejects schema15 readiness; old migration history retained.")
+            print("Schema9-to16 upgrade passed: seven canonical identity/device/vault/sync rows preserve original columns and decrypt after migration and repeat; new runtime rejects schema9 and old runtime rejects schema16 readiness; retained devices become manual/desktop; old migration history retained.")
         assert sql("CREATE TABLE prohibited(id INT)", "nds_runtime", check=False).returncode != 0
         assert sql("UPDATE _sqlx_migrations SET success=false WHERE false", "nds_runtime", check=False).returncode != 0
         assert sql("UPDATE nds_sessions SET expires_at_ms=expires_at_ms WHERE false", "nds_runtime", check=False).returncode == 0
