@@ -12,6 +12,10 @@ concurrency:
   group: main-validation
   cancel-in-progress: false
 
+env:
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_PROFILE_TEST_DEBUG: 0
+
 jobs:
   contract:
     runs-on: ubuntu-24.04
@@ -25,6 +29,12 @@ jobs:
           bun-version-file: package.json
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
+      - name: Restore the Cargo dependency and tool cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: native-contract
+          add-job-id-key: "false"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Install pinned quality tools
         run: |
           cargo install --locked --version 0.9.148 cargo-nextest
@@ -53,6 +63,12 @@ jobs:
           just-version: '1.59.0'
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
+      - name: Restore the Cargo dependency and tool cache
+        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          shared-key: integration
+          add-job-id-key: "false"
+          save-if: ${{ github.ref == 'refs/heads/main' }}
       - name: Verify PostgreSQL and SMTP identity acceptance
         run: just integration-postgres
       - name: Build and exercise the actual server container
