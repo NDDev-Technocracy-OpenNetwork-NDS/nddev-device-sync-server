@@ -331,6 +331,51 @@ configured bootstrap operator identity. A company administrator does not gain
 these privileges. A valid non-operator receives `403 authorization_denied` and
 retains its ordinary session; ingestion and client policy remain available.
 
+### Collection policy, diagnostic search and the global grant (schema 17)
+
+`GET /v2/observability/collection-policy` gives a signed client its one effective
+policy:
+- `off` while server or collector export is disabled;
+- `debug` with `debug_expires_at` while an operator window for that device is open;
+- `standard` otherwise.
+
+The optional `collection_policy_file` in the observability configuration holds
+those windows: `{"revision": N, "debug": [{"device_id": "...", "expires_at":
+"RFC 3339"}]}`. At most 64 windows are allowed. A window that has expired or ends
+more than seven days from now is ignored, so debug is always finite. Functional
+journals and action results never depend on this policy.
+
+`POST /v2/observability/search` reads stored diagnostics in a scope the server
+decides from the signed request, never from the body:
+- `member`: the caller's own records.
+- `organization`: records stored in that organization's tenant, for an active
+  administrator of the organization. Members who joined with an independent
+  account keep their personal diagnostics private.
+- `global`: every scope, only with a current global grant.
+
+The collector receives the decided scope in fixed headers. It answers with fixed,
+redacted `DiagnosticRecord` fields over at most the seven-day retention. A refusal
+is `403 forbidden_scope` or `403 global_grant_required`.
+
+The global grant needs an SSHSIG signature by an allowed administrator key.
+`global_admin_keys_file` lists those keys, one `ssh-ed25519 <base64> [comment]`
+line each; Estate `deploy/nds/global-admin-key.json` records the current key.
+1. `POST /v2/observability/global-challenge` issues a one-time 43-character
+   challenge. It lives two minutes, is bound to the signed session and device,
+   and at most four can be pending.
+2. The holder signs the exact challenge bytes:
+   `printf %s "$CHALLENGE" | ssh-keygen -Y sign -f <key> -n nds-global-admin@nddev.ai`.
+3. `POST /v2/observability/global-grant` with `{challenge, signature}` spends the
+   challenge before checking the signature, so a failed or replayed proof never
+   gets a second try.
+
+A valid proof opens global scope for that session and device for fifteen minutes.
+The grant is not a bearer token: every search still carries the session and device
+signature. Removing a key from the file revokes its grants on the next search.
+Grant issue and denial are logged with the key fingerprint, user and device.
+Schema 17 adds only the challenge and grant tables; the runtime role cannot
+rewrite a challenge or a grant's binding columns.
+
 ## Passkeys and schema 8
 
 Configure `NDS_PUBLIC_ORIGIN` with the exact HTTPS origin and a DNS host, alongside
