@@ -108,6 +108,7 @@ async fn https_preserves_headers_and_only_reloads_valid_pairs() {
         public_origin: None,
         max_connections: 256,
         max_requests: 64,
+        trusted_proxy_ips: Vec::new(),
         identity: None,
         vault_wrapping_key: None,
         observability: None,

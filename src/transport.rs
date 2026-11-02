@@ -105,6 +105,18 @@ pub async fn serve_listener(
     handle: Handle<SocketAddr>,
     max_connections: usize,
 ) -> Result<(), TransportError> {
+    serve_listener_with_trusted_proxies(listener, app, tls, handle, max_connections, Vec::new())
+        .await
+}
+
+async fn serve_listener_with_trusted_proxies(
+    listener: TcpListener,
+    app: Router,
+    tls: Option<RustlsConfig>,
+    handle: Handle<SocketAddr>,
+    max_connections: usize,
+    trusted_proxy_ips: Vec<std::net::IpAddr>,
+) -> Result<(), TransportError> {
     listener
         .set_nonblocking(true)
         .map_err(|_| TransportError::Listener)?;
@@ -112,7 +124,11 @@ pub async fn serve_listener(
         .map_err(|_| TransportError::Listener)?
         .handle(handle);
     configure_http(&mut server);
-    let connections = crate::admission::Connections::new(app, max_connections);
+    let connections = if trusted_proxy_ips.is_empty() {
+        crate::admission::Connections::new(app, max_connections)
+    } else {
+        crate::admission::Connections::with_trusted_proxies(app, max_connections, trusted_proxy_ips)
+    };
     match tls {
         Some(tls) => {
             server
@@ -171,12 +187,13 @@ pub async fn serve(config: &ServerConfig, app: Router) -> Result<(), TransportEr
         Ok::<(), TransportError>(())
     };
     tracing::info!(module = "transport", scope = "transport", event.name = "server.started", address = %address, transport = if tls.is_some() { "https" } else { "http" }, outcome = "ok");
-    let server = serve_listener(
+    let server = serve_listener_with_trusted_proxies(
         listener,
         app,
         tls.clone(),
         handle.clone(),
         config.max_connections,
+        config.trusted_proxy_ips.clone(),
     );
     tokio::pin!(server);
     tokio::select! {
@@ -188,5 +205,63 @@ pub async fn serve(config: &ServerConfig, app: Router) -> Result<(), TransportEr
             tracing::info!(module = "transport", scope = "transport", event.name = "server.shutdown.completed", outcome = if result.is_ok() { "ok" } else { "error" });
             control_result.and(result)
         }
+    }
+}
+
+#[cfg(test)]
+mod proxy_tests {
+    use super::*;
+    use axum::{Extension, routing::get};
+
+    #[tokio::test]
+    async fn trusted_transport_keeps_distinct_clients_on_a_reused_connection() {
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let handle = Handle::new();
+        let app = Router::new().route(
+            "/",
+            get(
+                |Extension(peer): Extension<crate::admission::PeerAddress>| async move {
+                    peer.0.to_string()
+                },
+            ),
+        );
+        let server = tokio::spawn(serve_listener_with_trusted_proxies(
+            listener,
+            app,
+            None,
+            handle.clone(),
+            4,
+            vec!["127.0.0.1".parse().unwrap()],
+        ));
+        let addr = tokio::time::timeout(Duration::from_secs(2), handle.listening())
+            .await
+            .unwrap()
+            .unwrap();
+        let client = reqwest::Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let url = format!("http://{addr}/");
+        for address in ["198.51.100.23", "198.51.100.24", "2001:db8::23"] {
+            let response = client
+                .get(&url)
+                .header("X-Real-IP", address)
+                .send()
+                .await
+                .unwrap();
+            assert_eq!(response.status(), reqwest::StatusCode::OK);
+            assert_eq!(response.text().await.unwrap(), address);
+        }
+        let response = client.get(&url).send().await.unwrap();
+        assert_eq!(response.status(), reqwest::StatusCode::BAD_REQUEST);
+        assert!(response.bytes().await.unwrap().is_empty());
+        drop(client);
+        handle.graceful_shutdown(Some(Duration::from_secs(1)));
+        tokio::time::timeout(Duration::from_secs(2), server)
+            .await
+            .unwrap()
+            .unwrap()
+            .unwrap();
     }
 }

@@ -19,6 +19,7 @@ pub mod protocol_sync;
 pub mod protocol_sync3;
 pub mod protocol_v2;
 pub mod protocol_vault;
+mod proxy;
 pub mod screen;
 pub mod sync;
 #[cfg(test)]
@@ -172,6 +173,7 @@ impl AppState {
                 public_origin: None,
                 max_connections: 256,
                 max_requests: 64,
+                trusted_proxy_ips: Vec::new(),
                 identity: None,
                 vault_wrapping_key: None,
                 observability: None,

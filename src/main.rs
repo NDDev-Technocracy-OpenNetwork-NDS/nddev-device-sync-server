@@ -98,6 +98,7 @@ fn process_error_class(error: &(dyn std::error::Error + 'static)) -> &'static st
             ConfigError::SecretValue => "configuration_secret_value",
             ConfigError::MigrationDatabaseMissing => "configuration_migration_database_missing",
             ConfigError::AdmissionLimit => "configuration_admission_limit",
+            ConfigError::TrustedProxy => "configuration_trusted_proxy",
             ConfigError::Identity => "configuration_identity",
             ConfigError::IdentityHttpsRequired => "configuration_identity_https_required",
             ConfigError::PublicOrigin => "configuration_public_origin",

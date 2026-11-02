@@ -63,11 +63,21 @@ pub struct Connections {
     app: Router,
     permits: Arc<Semaphore>,
     pressure: Pressure,
+    trusted_proxies: Vec<std::net::IpAddr>,
 }
 
 impl Connections {
     pub fn new(app: Router, maximum: usize) -> Self {
+        Self::with_trusted_proxies(app, maximum, Vec::new())
+    }
+
+    pub fn with_trusted_proxies(
+        app: Router,
+        maximum: usize,
+        trusted_proxies: Vec<std::net::IpAddr>,
+    ) -> Self {
         Self {
+            trusted_proxies,
             app,
             permits: Arc::new(Semaphore::new(maximum)),
             pressure: Pressure::default(),
@@ -94,10 +104,16 @@ impl Service<SocketAddr> for Connections {
         self.pressure.recover("connections");
         // The Router and its in-flight requests retain this permit. A failed
         // TLS handshake drops the Router too, without a separate cleanup task.
-        ready(Ok(self
-            .app
-            .clone()
-            .layer(Extension(Arc::new(permit)))
-            .layer(Extension(PeerAddress(address.ip())))))
+        let app = self.app.clone().layer(Extension(Arc::new(permit)));
+        let app = if self.trusted_proxies.contains(&address.ip()) {
+            app.layer(axum::middleware::from_fn(
+                crate::proxy::trusted_client_address,
+            ))
+        } else {
+            app
+        };
+        // The accepted peer is installed first; the trusted middleware inside
+        // it may replace this value before any handler sees the request.
+        ready(Ok(app.layer(Extension(PeerAddress(address.ip())))))
     }
 }
