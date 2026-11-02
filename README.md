@@ -166,3 +166,5 @@ image for three days. The artifact includes the exact source revision, native
 image ID and image-archive SHA-256. Operators must verify the complete workflow
 result and those bytes before adopting the image; the artifact does not deploy
 anything or supply runtime credentials.
+
+Server prereleases may distribute the same tested image and checksum receipt\nfor source- and digest-pinned cache delivery. No runtime secrets belong in the\nimage or its archive.\n
