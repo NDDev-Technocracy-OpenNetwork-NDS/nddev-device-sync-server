@@ -237,6 +237,7 @@ mod proxy_tests {
             .await
             .unwrap()
             .unwrap();
+        let _ = rustls::crypto::ring::default_provider().install_default();
         let client = reqwest::Client::builder()
             .no_proxy()
             .timeout(Duration::from_secs(2))

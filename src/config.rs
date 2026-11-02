@@ -174,7 +174,10 @@ fn trusted_proxy_ips(value: Option<String>) -> Result<Vec<std::net::IpAddr>, Con
             .trim()
             .parse::<std::net::IpAddr>()
             .map_err(|_| ConfigError::TrustedProxy)?;
-        if address.is_unspecified() || address.is_multicast() {
+        if address.is_unspecified()
+            || address.is_multicast()
+            || matches!(address, std::net::IpAddr::V4(ip) if ip.is_broadcast())
+        {
             return Err(ConfigError::TrustedProxy);
         }
         if !addresses.contains(&address) {
@@ -361,6 +364,7 @@ mod tests {
             "localhost",
             "0.0.0.0",
             "::",
+            "255.255.255.255",
             "224.0.0.1",
             "ff02::1",
             "127.0.0.1,",

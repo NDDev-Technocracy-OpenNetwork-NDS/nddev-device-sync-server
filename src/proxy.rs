@@ -17,7 +17,10 @@ fn client_address(request: &Request) -> Option<IpAddr> {
         return None;
     }
     let address: IpAddr = value.to_str().ok()?.parse().ok()?;
-    (!address.is_unspecified() && !address.is_multicast()).then_some(address)
+    (!address.is_unspecified()
+        && !address.is_multicast()
+        && !matches!(address, IpAddr::V4(ip) if ip.is_broadcast()))
+    .then_some(address)
 }
 
 pub(crate) async fn trusted_client_address(mut request: Request, next: Next) -> Response {
@@ -120,6 +123,7 @@ mod tests {
             vec!["198.51.100.23:1234"],
             vec!["not-an-address"],
             vec!["0.0.0.0"],
+            vec!["255.255.255.255"],
             vec!["::"],
             vec!["224.0.0.1"],
             vec!["ff02::1"],
