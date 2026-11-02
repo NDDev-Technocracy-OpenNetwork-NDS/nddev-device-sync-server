@@ -142,3 +142,29 @@ creates its empty owner counter. Migration defaults and existing histories are
 unchanged; the real client must negotiate the admitted format.
 
 Release journals live in [GitHub Releases](https://github.com/NDDev-Technocracy-OpenNetwork-NDS/nddev-device-sync-server/releases).
+
+
+### Explicitly trusted reverse proxies
+
+Direct-origin deployments keep using the accepted socket IP for identity,
+passkey and device-enrollment abuse controls; forwarded headers are ignored.
+
+When a reverse proxy is required, set NDS_TRUSTED_PROXY_IPS to at most 16
+comma-separated, exact IPv4/IPv6 socket-peer addresses. No hostnames, CIDRs,
+wildcards, unspecified or multicast addresses are accepted. The proxy must
+overwrite X-Real-IP with the original client IP and restrict access to the
+backend listener. Requests from a configured peer must contain exactly one
+valid unicast IP in that header; missing, duplicate, list, port-bearing and
+malformed values fail with HTTP 400. Other peers retain their actual socket
+identity, regardless of supplied headers. Forwarded and X-Forwarded-For
+remain untrusted. Trust the actual backend-facing socket address, not its
+DNS name or client-visible address. Shared-host administrative access remains
+part of the operator trust boundary.
+
+The successful main CI integration job retains its tested linux/amd64 server
+image for three days. The artifact includes the exact source revision, native
+image ID and image-archive SHA-256. Operators must verify the complete workflow
+result and those bytes before adopting the image; the artifact does not deploy
+anything or supply runtime credentials.
+
+Server prereleases may distribute the same tested image and checksum receipt\nfor source- and digest-pinned cache delivery. No runtime secrets belong in the\nimage or its archive.\n

@@ -89,8 +89,9 @@ fn service(state: &AppState) -> Result<&Service, ApiError> {
         .ok_or(IdentityError::Unavailable.into())
 }
 pub(crate) fn peer(peer: Option<Extension<PeerAddress>>) -> Result<Vec<u8>, IdentityError> {
-    // Only the accepted socket peer enters abuse controls. Neither ports nor
-    // Forwarded/X-Forwarded-For are trusted by this direct-origin server.
+    // Transport supplies the accepted socket peer by default. Only an explicitly
+    // configured trusted proxy may replace it using one validated X-Real-IP.
+    // Ports, Forwarded and X-Forwarded-For never enter abuse controls.
     match peer.ok_or(IdentityError::Unavailable)?.0.0 {
         std::net::IpAddr::V4(ip) => Ok(ip.octets().to_vec()),
         std::net::IpAddr::V6(ip) => Ok(ip

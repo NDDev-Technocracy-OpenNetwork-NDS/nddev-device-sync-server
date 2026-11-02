@@ -95,3 +95,52 @@ jobs:
           assert health['source_commit'] == os.environ['GITHUB_SHA']
           assert health['database_configured'] is False
           PY
+      - name: Package the tested server image
+        shell: bash
+        run: |
+          set -euo pipefail
+          directory="$RUNNER_TEMP/nds-server-image"
+          install -d -m 0755 "$directory"
+          image="nddev-device-sync-server:source-$GITHUB_SHA"
+          docker image tag nds-server-check "$image"
+          docker image save --output "$directory/image.tar" "$image"
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+          import subprocess
+          directory = Path(os.environ["RUNNER_TEMP"]) / "nds-server-image"
+          health = json.loads((Path(os.environ["RUNNER_TEMP"]) / "nds-container-health.json").read_text())
+          assert health["status"] == "ok"
+          assert health["source_commit"] == os.environ["GITHUB_SHA"]
+          digest = hashlib.sha256()
+          with (directory / "image.tar").open("rb") as archive:
+              for chunk in iter(lambda: archive.read(1024 * 1024), b""):
+                  digest.update(chunk)
+          reference = "nddev-device-sync-server:source-" + os.environ["GITHUB_SHA"]
+          image_id = subprocess.check_output(
+              ["docker", "image", "inspect", reference, "--format", "{{.Id}}"],
+              text=True,
+          ).strip()
+          receipt = {
+              "schema_version": 1,
+              "repository": os.environ["GITHUB_REPOSITORY"],
+              "source_commit": os.environ["GITHUB_SHA"],
+              "run_id": os.environ["GITHUB_RUN_ID"],
+              "platform": "linux/amd64",
+              "image_reference": reference,
+              "image_id": image_id,
+              "archive_sha256": digest.hexdigest(),
+              "container_health_verified": True,
+          }
+          (directory / "receipt.json").write_text(json.dumps(receipt, indent=2) + "\n")
+          PY
+      - name: Retain the tested server image
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: nds-server-image-${{ github.sha }}
+          path: ${{ runner.temp }}/nds-server-image/
+          if-no-files-found: error
+          retention-days: 3
+          compression-level: 1

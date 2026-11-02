@@ -50,6 +50,7 @@ pub struct ServerConfig {
     pub public_origin: Option<reqwest::Url>,
     pub max_connections: usize,
     pub max_requests: usize,
+    pub trusted_proxy_ips: Vec<std::net::IpAddr>,
     pub identity: Option<crate::identity::config::AuthConfig>,
     pub observability: Option<std::sync::Arc<crate::observability::Gateway>>,
     pub vault_wrapping_key: Option<std::sync::Arc<crate::vault::crypto::WrappingKey>>,
@@ -72,6 +73,8 @@ pub enum ConfigError {
     MigrationDatabaseMissing,
     #[error("admission limit is outside its supported range")]
     AdmissionLimit,
+    #[error("invalid NDS_TRUSTED_PROXY_IPS")]
+    TrustedProxy,
     #[error("invalid identity configuration")]
     Identity,
     #[error("identity requires HTTPS except on a loopback listener")]
@@ -136,6 +139,7 @@ impl ServerConfig {
                 .transpose()?,
             max_connections: admission_limit(get("NDS_MAX_CONNECTIONS"), 256, 4096)?,
             max_requests: admission_limit(get("NDS_MAX_REQUESTS"), 64, 1024)?,
+            trusted_proxy_ips: trusted_proxy_ips(get("NDS_TRUSTED_PROXY_IPS"))?,
             identity: get("NDS_AUTH_CONFIG_FILE")
                 .map(|path| crate::identity::config::AuthConfig::read(&path))
                 .transpose()?,
@@ -151,6 +155,36 @@ impl ServerConfig {
         }
         Ok(config)
     }
+}
+
+fn trusted_proxy_ips(value: Option<String>) -> Result<Vec<std::net::IpAddr>, ConfigError> {
+    let Some(value) = value else {
+        return Ok(Vec::new());
+    };
+    if value.len() > 1024 {
+        return Err(ConfigError::TrustedProxy);
+    }
+    let parts: Vec<_> = value.split(',').collect();
+    if parts.len() > 16 {
+        return Err(ConfigError::TrustedProxy);
+    }
+    let mut addresses = Vec::new();
+    for part in parts {
+        let address = part
+            .trim()
+            .parse::<std::net::IpAddr>()
+            .map_err(|_| ConfigError::TrustedProxy)?;
+        if address.is_unspecified()
+            || address.is_multicast()
+            || matches!(address, std::net::IpAddr::V4(ip) if ip.is_broadcast())
+        {
+            return Err(ConfigError::TrustedProxy);
+        }
+        if !addresses.contains(&address) {
+            addresses.push(address);
+        }
+    }
+    Ok(addresses)
 }
 
 fn public_origin(value: &str) -> Result<reqwest::Url, ConfigError> {
@@ -311,5 +345,43 @@ mod tests {
                 );
             }
         }
+    }
+    #[test]
+    fn trusted_proxy_configuration_is_explicit_exact_and_bounded() {
+        assert!(trusted_proxy_ips(None).unwrap().is_empty());
+        assert_eq!(
+            trusted_proxy_ips(Some("127.0.0.1, ::1,127.0.0.1".into())).unwrap(),
+            vec![
+                "127.0.0.1".parse::<std::net::IpAddr>().unwrap(),
+                "::1".parse().unwrap()
+            ]
+        );
+        for value in [
+            "",
+            " ",
+            "*",
+            "127.0.0.1/8",
+            "localhost",
+            "0.0.0.0",
+            "::",
+            "255.255.255.255",
+            "224.0.0.1",
+            "ff02::1",
+            "127.0.0.1,",
+            "127.0.0.1:8080",
+        ] {
+            assert_eq!(
+                trusted_proxy_ips(Some(value.into())),
+                Err(ConfigError::TrustedProxy)
+            );
+        }
+        assert_eq!(
+            trusted_proxy_ips(Some(vec!["127.0.0.1"; 17].join(","))),
+            Err(ConfigError::TrustedProxy)
+        );
+        assert_eq!(
+            trusted_proxy_ips(Some("x".repeat(1025))),
+            Err(ConfigError::TrustedProxy)
+        );
     }
 }
