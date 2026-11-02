@@ -160,3 +160,9 @@ identity, regardless of supplied headers. Forwarded and X-Forwarded-For
 remain untrusted. Trust the actual backend-facing socket address, not its
 DNS name or client-visible address. Shared-host administrative access remains
 part of the operator trust boundary.
+
+The successful main CI integration job retains its tested linux/amd64 server
+image for three days. The artifact includes the exact source revision, native
+image ID and image-archive SHA-256. Operators must verify the complete workflow
+result and those bytes before adopting the image; the artifact does not deploy
+anything or supply runtime credentials.
