@@ -3,6 +3,7 @@ pub mod browser;
 pub mod config;
 pub mod database;
 pub mod devices;
+pub mod diagnostics;
 pub mod identity;
 pub mod logging;
 pub mod observability;
@@ -228,7 +229,8 @@ pub fn router(state: AppState) -> Router {
         .merge(vault::routes())
         .merge(passkeys::http::routes())
         .merge(organizations::http::routes())
-        .merge(observability::routes());
+        .merge(observability::routes())
+        .merge(diagnostics::routes());
     let routes = if state.config.web_assets.is_some() {
         routes
             .route("/", get(web::index))

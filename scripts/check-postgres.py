@@ -206,8 +206,8 @@ try:
             if upgrade_witness is not None:
                 verify(sql, upgrade_witness)
                 assert sql("SELECT authenticated_at_ms=GREATEST(expires_at_ms-28800000,0) FROM nds_sessions").stdout.strip() == "t"
-        assert sql("SELECT count(*) FROM _sqlx_migrations WHERE success").stdout.strip() == "16"
-        assert sql("SELECT value FROM nddev_schema_meta WHERE key='schema_version'").stdout.strip() == "16"
+        assert sql("SELECT count(*) FROM _sqlx_migrations WHERE success").stdout.strip() == "17"
+        assert sql("SELECT value FROM nddev_schema_meta WHERE key='schema_version'").stdout.strip() == "17"
         assert sql("SELECT count(*) FROM nds_devices d LEFT JOIN nds_device_policies p USING(device_id) WHERE p.device_id IS NULL").stdout.strip() == "0"
         assert sql("SELECT to_regclass('public.nds_sync_operations') IS NULL").stdout.strip() == "t"
         assert sql("UPDATE public.nds_replica_counters SET admission_version=3 WHERE false", "nds_runtime", check=False).returncode != 0
@@ -222,7 +222,7 @@ try:
             assert server.returncode == 0
             server = None
             clean(sql, upgrade_witness)
-            print("Schema9-to16 upgrade passed: seven canonical identity/device/vault/sync rows preserve original columns and decrypt after migration and repeat; new runtime rejects schema9 and old runtime rejects schema16 readiness; retained devices become manual/desktop; old migration history retained.")
+            print("Schema9-to17 upgrade passed: seven canonical identity/device/vault/sync rows preserve original columns and decrypt after migration and repeat; new runtime rejects schema9 and old runtime rejects schema17 readiness; retained devices become manual/desktop; old migration history retained.")
         assert sql("CREATE TABLE prohibited(id INT)", "nds_runtime", check=False).returncode != 0
         assert sql("UPDATE _sqlx_migrations SET success=false WHERE false", "nds_runtime", check=False).returncode != 0
         assert sql("UPDATE nds_sessions SET expires_at_ms=expires_at_ms WHERE false", "nds_runtime", check=False).returncode == 0
@@ -231,6 +231,30 @@ try:
         assert sql("UPDATE nds_sessions SET user_id=user_id WHERE false", "nds_runtime", check=False).returncode != 0
         assert sql("UPDATE nds_devices SET public_key=public_key WHERE false", "nds_runtime", check=False).returncode != 0
         assert sql("UPDATE nds_enrollment_challenges SET challenge=challenge WHERE false", "nds_runtime", check=False).returncode != 0
+        # Global diagnostic challenges and grants (P2): challenges are only inserted and spent;
+        # a grant's session, device and key binding columns are never rewritten in place.
+        assert sql("UPDATE nds_global_diagnostic_challenges SET challenge=challenge WHERE false", "nds_runtime", check=False).returncode != 0
+        assert sql("UPDATE nds_global_diagnostic_grants SET session_binding=session_binding WHERE false", "nds_runtime", check=False).returncode != 0
+        assert sql("UPDATE nds_global_diagnostic_grants SET device_id=device_id WHERE false", "nds_runtime", check=False).returncode != 0
+        assert sql("DELETE FROM nds_global_diagnostic_challenges WHERE false", "nds_runtime", check=False).returncode == 0
+        assert sql("INSERT INTO nds_global_diagnostic_challenges VALUES ('short','\\x00','d','u',1)", "nds_runtime", check=False).returncode != 0
+        # The runtime's own statements (src/diagnostics.rs) against the real schema and grants.
+        binding = "'\\x" + "ab" * 32 + "'::bytea"
+        challenge = "'" + "A" * 43 + "'"
+        diagnostics = [
+            f"INSERT INTO nds_global_diagnostic_challenges(challenge,session_binding,device_id,user_id,expires_at_ms) VALUES ({challenge},{binding},'device-1','user-1',9007199254740991)",
+            f"SELECT count(*) FROM nds_global_diagnostic_challenges WHERE session_binding={binding} AND device_id='device-1'",
+            f"DELETE FROM nds_global_diagnostic_challenges WHERE challenge={challenge} AND session_binding={binding} AND device_id='device-1' RETURNING expires_at_ms",
+            "DELETE FROM nds_global_diagnostic_grants WHERE expires_at_ms<=1",
+            f"INSERT INTO nds_global_diagnostic_grants(session_binding,device_id,user_id,key_fingerprint,granted_at_ms,expires_at_ms) VALUES ({binding},'device-1','user-1','SHA256:{'A' * 43}',1,9007199254740991) ON CONFLICT (session_binding,device_id) DO UPDATE SET user_id=EXCLUDED.user_id,key_fingerprint=EXCLUDED.key_fingerprint,granted_at_ms=EXCLUDED.granted_at_ms,expires_at_ms=EXCLUDED.expires_at_ms",
+            f"INSERT INTO nds_global_diagnostic_grants(session_binding,device_id,user_id,key_fingerprint,granted_at_ms,expires_at_ms) VALUES ({binding},'device-1','user-1','SHA256:{'B' * 43}',2,9007199254740991) ON CONFLICT (session_binding,device_id) DO UPDATE SET user_id=EXCLUDED.user_id,key_fingerprint=EXCLUDED.key_fingerprint,granted_at_ms=EXCLUDED.granted_at_ms,expires_at_ms=EXCLUDED.expires_at_ms",
+            f"SELECT key_fingerprint FROM nds_global_diagnostic_grants WHERE session_binding={binding} AND device_id='device-1' AND user_id='user-1' AND expires_at_ms>2",
+            "SELECT EXISTS(SELECT 1 FROM nds_company_memberships WHERE tenant_id='org-1' AND user_id='user-1' AND company_role='admin' AND membership_active)",
+        ]
+        results = [sql(statement, "nds_runtime").stdout.strip() for statement in diagnostics]
+        assert results[1] == "1" and results[2].startswith("9007199254740991"), results
+        assert results[6] == "SHA256:" + "B" * 43 and results[7] == "f", results
+        sql(f"DELETE FROM nds_global_diagnostic_grants WHERE session_binding={binding}", "nds_runtime")
         server = subprocess.Popen([BINARY, "serve"], env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
         wait_ready(port, 200)
         # Actual PostgreSQL lock contention holds the only request permit. The

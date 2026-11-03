@@ -14,6 +14,8 @@ use nddev_device_sync_application::sync::SyncError;
 pub enum ApiError {
     Transport(SyncError),
     OperatorDenied,
+    /// A P2 diagnostic refusal: the caller has no right to the scope, or lacks a global grant.
+    Diagnostic(dto::Error),
 }
 impl From<SyncError> for ApiError {
     fn from(error: SyncError) -> Self {
@@ -27,6 +29,11 @@ impl IntoResponse for ApiError {
             Self::OperatorDenied => (
                 StatusCode::FORBIDDEN,
                 Json(serde_json::json!({"error":"authorization_denied"})),
+            )
+                .into_response(),
+            Self::Diagnostic(error) => (
+                StatusCode::FORBIDDEN,
+                Json(dto::ObservabilityError { error }),
             )
                 .into_response(),
         }
@@ -49,6 +56,12 @@ struct Settings {
     trace_origin: String,
     ingest_token_file: PathBuf,
     admin_token_file: PathBuf,
+    /// Allowed global diagnostic administrator keys (`ssh-ed25519 <base64> [comment]` lines).
+    #[serde(default)]
+    global_admin_keys_file: Option<PathBuf>,
+    /// Operator debug windows per device; absent means every enabled client is standard.
+    #[serde(default)]
+    collection_policy_file: Option<PathBuf>,
 }
 pub struct Gateway {
     origin: reqwest::Url,
@@ -57,13 +70,15 @@ pub struct Gateway {
     admin: SecretString,
     http: reqwest::Client,
     permits: tokio::sync::Semaphore,
+    pub(crate) global_admin_keys: Option<PathBuf>,
+    pub(crate) collection_policy: Option<PathBuf>,
 }
 impl std::fmt::Debug for Gateway {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.write_str("ObservabilityGateway([REDACTED])")
     }
 }
-fn read(path: &FilePath) -> Result<Vec<u8>, ()> {
+pub(crate) fn read(path: &FilePath) -> Result<Vec<u8>, ()> {
     let mut options = OpenOptions::new();
     options.read(true);
     #[cfg(unix)]
@@ -139,9 +154,11 @@ impl Gateway {
                 .build()
                 .map_err(|_| ())?,
             permits: tokio::sync::Semaphore::new(4),
+            global_admin_keys: settings.global_admin_keys_file,
+            collection_policy: settings.collection_policy_file,
         }))
     }
-    async fn forward<T: serde::de::DeserializeOwned>(
+    pub(crate) async fn forward<T: serde::de::DeserializeOwned>(
         &self,
         path: &str,
         body: Option<Vec<u8>>,
@@ -150,11 +167,41 @@ impl Gateway {
         let bytes = self.forward_bytes(path, body, actor).await?;
         serde_json::from_slice(&bytes).map_err(|_| SyncError::Unavailable)
     }
+    /// Forwards one scoped diagnostic search. The scope was decided by the server and travels in
+    /// fixed headers next to the admin token; the observability service only narrows to it.
+    pub(crate) async fn search(
+        &self,
+        body: Vec<u8>,
+        actor: &str,
+        kind: &str,
+        subject: Option<&str>,
+    ) -> Result<dto::DiagnosticSearchPage, SyncError> {
+        let bytes = self
+            .send(
+                "/v2/observability/search",
+                Some(body),
+                actor,
+                Some((kind, subject)),
+                1_048_576,
+            )
+            .await?;
+        serde_json::from_slice(&bytes).map_err(|_| SyncError::Unavailable)
+    }
     async fn forward_bytes(
         &self,
         path: &str,
         body: Option<Vec<u8>>,
         actor: &str,
+    ) -> Result<Vec<u8>, SyncError> {
+        self.send(path, body, actor, None, 65_536).await
+    }
+    async fn send(
+        &self,
+        path: &str,
+        body: Option<Vec<u8>>,
+        actor: &str,
+        scope: Option<(&str, Option<&str>)>,
+        limit: usize,
     ) -> Result<Vec<u8>, SyncError> {
         let _permit = self
             .permits
@@ -182,6 +229,12 @@ impl Gateway {
                 .bearer_auth(token.expose())
                 .header("x-nds-actor", actor);
         }
+        if let Some((kind, subject)) = scope {
+            request = request.header("x-nds-scope-kind", kind);
+            if let Some(subject) = subject {
+                request = request.header("x-nds-scope-subject", subject);
+            }
+        }
         if let Some(body) = body {
             request = request
                 .header(
@@ -206,13 +259,13 @@ impl Gateway {
         }
         if response
             .content_length()
-            .is_some_and(|length| length > 65_536)
+            .is_some_and(|length| length > limit as u64)
         {
             return Err(SyncError::Unavailable);
         }
         let mut bytes = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(|_| SyncError::Unavailable)? {
-            if bytes.len() + chunk.len() > 65_536 {
+            if bytes.len() + chunk.len() > limit {
                 return Err(SyncError::Unavailable);
             }
             bytes.extend_from_slice(&chunk);
@@ -220,14 +273,14 @@ impl Gateway {
         Ok(bytes)
     }
 }
-fn gateway(state: &AppState) -> Result<&Gateway, SyncError> {
+pub(crate) fn gateway(state: &AppState) -> Result<&Gateway, SyncError> {
     state
         .config
         .observability
         .as_deref()
         .ok_or(SyncError::Unavailable)
 }
-async fn authorize(
+pub(crate) async fn authorize(
     state: &AppState,
     headers: &HeaderMap,
     method: &str,
@@ -643,6 +696,8 @@ mod tests {
                 .build()
                 .unwrap(),
             permits: tokio::sync::Semaphore::new(1),
+            global_admin_keys: None,
+            collection_policy: None,
         };
         let result = gateway
             .forward_bytes("/incident", Some(b"{}".to_vec()), "fixture")
