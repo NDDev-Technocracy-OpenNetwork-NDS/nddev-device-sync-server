@@ -7,20 +7,14 @@ credentials, private estate data and live telemetry outside this repository.
 0.20.2, pinned in CI. Tests and Clippy use the committed dependency lock;
 advisory, license and source checks are part of the same gate.
 
-`main` and `dev` are permanent branches. Make scoped changes on a working
-branch, submit a pull request to `dev`, and promote reviewed changes from
-`dev` to `main`. Use Conventional Commits and signed commits. Do not delete
-permanent branches or rewrite published history.
-
 The `NDS checks / quality` job runs on GitHub-hosted Ubuntu with read-only
 repository permissions and immutable action pins. It checks this repository's
 current foundation. A green result is not deployment, release, integration or
-cross-platform acceptance. Full release gates remain those in the locked
-central standards.
+cross-platform acceptance. The repository owns its release and runtime acceptance checks.
 
-## Standards compatibility
+## Source compatibility
 
-`standarts.lock` records the immutable engineering and identity contract.
+`contracts.lock` records the immutable product identity contract.
 ADR 0006 defines the three sign-in methods and server-managed vault keys;
 ADR 0007 defines browser sessions and offline replicas. `module.yaml` records
 the paired core and protocol commits. Source updates do not rename published
