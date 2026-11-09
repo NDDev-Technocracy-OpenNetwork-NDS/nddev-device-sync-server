@@ -3,9 +3,16 @@
 Use the pinned toolchain and the repository's `just` recipes. Keep runtime
 credentials, private estate data and live telemetry outside this repository.
 
-`just check` requires cargo-nextest 0.9.148, cargo-audit 0.22.2 and cargo-deny
-0.20.2, pinned in CI. Tests and Clippy use the committed dependency lock;
-advisory, license and source checks are part of the same gate.
+Run `just setup` to fetch locked Cargo and Bun inputs, then `just check` for
+source-only browser analysis, Rust formatting, cargo-deny license/source policy
+and cargo-shear. Source checks compile no Rust or JavaScript and run no tests.
+The workflow installs the source-check tools before this gate.
+
+On an execution host, `just test` runs Clippy, Rust nextest/doctests, Bun tests
+and the emitted browser JavaScript equivalence check. `just verify` adds the
+advisory audit, pinned protocol projection and real PostgreSQL/SMTP acceptance.
+Existing CI retains its complete native contract and separate real-container
+qualification. Dependency and protocol pins stay authoritative for those checks.
 
 The `NDS checks / quality` job runs on GitHub-hosted Ubuntu with read-only
 repository permissions and immutable action pins. It checks this repository's

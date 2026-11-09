@@ -31,7 +31,8 @@ The current server provides:
 The server-served passkey handoff uses `src/passkeys/browser.ts`, emitted to the
 existing nonce-protected inline script. Browser-native WebAuthn JSON conversion
 and credential APIs validate their data; Rust retains challenge and identity
-authority. `just browser-check` verifies strict types and generated JS drift.
+authority. `just browser-check` verifies strict types and lint;
+`just browser-generated` verifies emitted JavaScript on an execution host.
 
 The legacy `module_count` health field is zero: the server composes no local-tool
 adapters. The native agent discovers those adapters; core owns their observation
@@ -63,12 +64,19 @@ sign-in or delivery to an external mailbox.
 ## Local development
 
 ```sh
-just fmt-check
+just setup
+just check
 just test
-just clippy
-just protocol-check
-just integration-postgres
+just verify
 ```
+
+`just setup` prepares locked dependencies without compiling. `just check` runs
+only source validation: strict browser types/lint, Rust formatting, license/source
+policy and unused-dependency analysis. Clippy, Rust/Bun tests and generated
+JavaScript equivalence belong to `just test` on execution hosts or runners.
+`just verify` also retains the advisory audit, exact protocol regeneration and
+actual PostgreSQL/SMTP acceptance. The full CI additionally qualifies the built
+server container; a source check is not server runtime acceptance.
 
 The PostgreSQL/SMTP acceptance also validates actual process NDJSON against the
 closed telemetry schema at the manifest's exact protocol commit, including
@@ -167,4 +175,6 @@ image ID and image-archive SHA-256. Operators must verify the complete workflow
 result and those bytes before adopting the image; the artifact does not deploy
 anything or supply runtime credentials.
 
-Server prereleases may distribute the same tested image and checksum receipt\nfor source- and digest-pinned cache delivery. No runtime secrets belong in the\nimage or its archive.\n
+Server prereleases may distribute the same tested image and checksum receipt
+for source- and digest-pinned cache delivery. No runtime secrets belong in the
+image or its archive.
