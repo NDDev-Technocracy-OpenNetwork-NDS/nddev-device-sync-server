@@ -11,6 +11,7 @@ behavior and a focused test.
 
 Prepare locked dependencies with `just setup`. `just check` is source-only:
 browser type/lint checks, Rust format/license/source policy and cargo-shear.
-Run Clippy, Rust/Bun tests, emitted JavaScript equivalence and `just verify`
-only on execution hosts or runners. Keep the existing PostgreSQL/SMTP,
+Run `just test` and `just verify` only on execution hosts or runners: these include
+Clippy, Rust/Bun tests, emitted JavaScript equivalence, release compilation,
+advisories and protocol regeneration. Keep the existing PostgreSQL/SMTP,
 protocol-projection, advisory and actual-container gates when changing CI.

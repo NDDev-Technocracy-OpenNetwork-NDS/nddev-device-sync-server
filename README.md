@@ -72,9 +72,9 @@ just verify
 
 `just setup` prepares locked dependencies without compiling. `just check` runs
 only source validation: strict browser types/lint, Rust formatting, license/source
-policy and unused-dependency analysis. Clippy, Rust/Bun tests and generated
-JavaScript equivalence belong to `just test` on execution hosts or runners.
-`just verify` also retains the advisory audit, exact protocol regeneration and
+policy and unused-dependency analysis. `just test` runs Clippy, Rust/Bun tests,
+generated JavaScript equivalence, the advisory audit, exact protocol regeneration
+and the release build on execution hosts or runners. `just verify` also runs
 actual PostgreSQL/SMTP acceptance. The full CI additionally qualifies the built
 server container; a source check is not server runtime acceptance.
 

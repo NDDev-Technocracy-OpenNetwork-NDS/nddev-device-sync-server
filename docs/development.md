@@ -8,16 +8,32 @@ source-only browser analysis, Rust formatting, cargo-deny license/source policy
 and cargo-shear. Source checks compile no Rust or JavaScript and run no tests.
 The workflow installs the source-check tools before this gate.
 
-On an execution host, `just test` runs Clippy, Rust nextest/doctests, Bun tests
-and the emitted browser JavaScript equivalence check. `just verify` adds the
-advisory audit, pinned protocol projection and real PostgreSQL/SMTP acceptance.
-Existing CI retains its complete native contract and separate real-container
-qualification. Dependency and protocol pins stay authoritative for those checks.
+On an execution host, `just test` runs Clippy, Rust nextest/doctests, Bun tests,
+the emitted browser JavaScript equivalence check, the advisory audit, pinned
+protocol projection and the release build. Nextest uses the `ci` profile and
+writes `.nddev-reports/nextest/ci/junit.xml`; Bun writes
+`.nddev-reports/bun-test.xml`. `just verify` adds real PostgreSQL/SMTP acceptance.
+Dependency and protocol pins stay authoritative for those checks.
 
-The `NDS checks / quality` job runs on GitHub-hosted Ubuntu with read-only
-repository permissions and immutable action pins. It checks this repository's
-current foundation. A green result is not deployment, release, integration or
-cross-platform acceptance. The repository owns its release and runtime acceptance checks.
+The workflows call the public `NDDev-Technocracy-OpenNetwork/nddev-ci` library at
+an immutable commit, with read-only repository access and explicit Node, Python,
+Bun and Rust inputs. `.github/native-tools.json` pins the Linux x64 tool release
+assets and their executable members by repository, immutable asset ID, size and
+SHA-256. Hosted preparation verifies both the archive and each selected member
+before adding a tool to the job's path; it never compiles quality tools as an
+installation fallback. The project's `just` recipes own every validation step.
+
+Pull requests run source checks and `just test`, together with the shared commit,
+secret and workflow-security merge stops. Full runs execute `just verify` once,
+then a separate job builds and exercises the actual server container. That job
+retains the existing image name, health/source checks, receipt shape and
+three-day image retention. It does not repeat the PostgreSQL/SMTP fixture.
+A green result is not deployment, release or cross-platform acceptance. The
+repository owns its release and runtime acceptance checks; the former CI result
+bundle is no longer the producer contract. Diagnostic command output remains in
+the workflow log, and the JUnit files are generated in the executing workspace.
+The retained `main` producer is tracked by #134: its consumers must move to the
+qualified `dev` image before promotion can reuse that result without rebuilding.
 
 ## Source compatibility
 
