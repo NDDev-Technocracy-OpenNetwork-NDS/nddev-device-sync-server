@@ -3,58 +3,26 @@ name: NDS checks
 on:
   pull_request:
     branches: [main, dev]
+    types: [opened, synchronize, reopened, labeled]
   workflow_dispatch:
 
-permissions:
-  contents: read
+permissions: {}
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
-env:
-  CARGO_PROFILE_DEV_DEBUG: 0
-  CARGO_PROFILE_TEST_DEBUG: 0
-
 jobs:
   quality:
-    runs-on: ubuntu-26.04
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          persist-credentials: false
-      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6
-        with:
-          bun-version-file: package.json
-      - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt,clippy
-      - name: Restore the Cargo dependency and tool cache
-        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
-        with:
-          shared-key: native-contract
-          add-job-id-key: "false"
-          save-if: ${{ github.ref == 'refs/heads/main' }}
-      - name: Install pinned quality tools
-        uses: NDDev-Technocracy-Standarts/std-0004-ci-cd-workflows/.github/actions/tools@c192c6adcf22088abf456635de614d42e8fa3f8d # nddev-cicd-v0.6.20
-        with:
-          # cargo-audit 0.22.2, cargo-deny 0.20.2 and cargo-nextest 0.9.149 from checksummed
-          # releases instead of compiling them with cargo install in every job.
-          capability: rust
-      - name: Install source-check tools
-        uses: taiki-e/install-action@c509219cf42fba86913069efd0ade2458c59337b
-        with:
-          tool: just@1.59.0,cargo-shear@1.14.0
-          fallback: none
-      - name: Check sources without compiling
-        run: |
-          just setup
-          just check
-      - name: Run the STD-0004 native Rust contract
-        id: native
-        uses: NDDev-Technocracy-Standarts/std-0004-ci-cd-workflows/.github/actions/ci@c192c6adcf22088abf456635de614d42e8fa3f8d # nddev-cicd-v0.6.20
-      - name: Require complete native results
-        if: ${{ !cancelled() }}
-        env:
-          STATUS: ${{ steps.native.outputs.status }}
-        run: test "$STATUS" = success
+    permissions:
+      contents: read
+    uses: NDDev-Technocracy-OpenNetwork/nddev-ci/.github/workflows/check.yml@f535b95d053fb1b225fce9a21d055599c6446a22
+    with:
+      timeout-minutes: 30
+      setup: true
+      node-version: '26.13.0'
+      python-version: '3.15.2'
+      bun-version: '1.4.4'
+      rust-version: '1.99.1'
+      rust-components: rustfmt,clippy
+      tool-assets: .github/native-tools.json
