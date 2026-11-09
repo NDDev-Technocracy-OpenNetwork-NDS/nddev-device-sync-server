@@ -15,8 +15,9 @@ jobs:
   contract:
     permissions:
       contents: read
-    uses: NDDev-Technocracy-OpenNetwork/nddev-ci/.github/workflows/check.yml@f535b95d053fb1b225fce9a21d055599c6446a22
+    uses: NDDev-Technocracy-OpenNetwork/nddev-ci/.github/workflows/check.yml@52d8302d2272967a21fd8e3ae594205588648777 # v0.6.28
     with:
+      hosted-runner: ubuntu-24.04
       timeout-minutes: 40
       setup: true
       node-version: '26.13.0'
