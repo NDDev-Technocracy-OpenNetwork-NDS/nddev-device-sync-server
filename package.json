@@ -10,7 +10,7 @@
     "check:generated": "tsc && git diff --exit-code -- src/passkeys/browser.js"
   },
   "devDependencies": {
-    "@biomejs/biome": "2.6.5",
+    "@biomejs/biome": "2.6.6",
     "typescript": "7.0.2"
   }
 }
