@@ -16,11 +16,11 @@ jobs:
   quality:
     permissions:
       contents: read
-    uses: NDDev-Technocracy-OpenNetwork/nddev-ci/.github/workflows/check.yml@f535b95d053fb1b225fce9a21d055599c6446a22
+    uses: NDDev-Technocracy-OpenNetwork/nddev-ci/.github/workflows/check.yml@9fead1382c452a6b791a0a9e464ac6ac66537ac3 # v0.6.51
     with:
       timeout-minutes: 30
       setup: true
-      node-version: '26.13.0'
+      node-version: '26.13.1'
       python-version: '3.15.2'
       bun-version: '1.4.4'
       rust-version: '1.99.1'
