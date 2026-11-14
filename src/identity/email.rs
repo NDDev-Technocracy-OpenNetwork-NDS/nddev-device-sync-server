@@ -23,7 +23,6 @@ use std::{
 };
 use tokio::sync::mpsc;
 use tracing::Instrument;
-use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 mod invitation;
 
@@ -247,15 +246,11 @@ impl nddev_device_sync_application::organizations::InvitationDelivery for Mailer
 }
 
 fn delivery_span(parent: SpanContext) -> tracing::Span {
-    let span = nddev_device_sync_telemetry::operation_span("identity", "transport")
-        .expect("static delivery span labels");
-    if span
-        .set_parent(Context::new().with_remote_span_context(parent))
-        .is_err()
-    {
-        tracing::warn!(module = "identity", scope = "transport", event.name = "email.delivery.context_unavailable", error.type = "trace_context", outcome = "error");
-    }
-    span
+    // The telemetry SDK freezes an operation's context when it creates the span, so the queued
+    // parent is the current context at creation. The worker runs outside any tracing span.
+    let _parent = Context::new().with_remote_span_context(parent).attach();
+    nddev_device_sync_telemetry::operation_span("identity", "transport")
+        .expect("static delivery span labels")
 }
 
 #[cfg(test)]
