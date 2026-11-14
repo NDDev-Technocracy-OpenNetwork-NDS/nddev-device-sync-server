@@ -23,7 +23,6 @@ use std::{
 };
 use tokio::sync::mpsc;
 use tracing::Instrument;
-use tracing_opentelemetry::OpenTelemetrySpanExt;
 
 mod invitation;
 
