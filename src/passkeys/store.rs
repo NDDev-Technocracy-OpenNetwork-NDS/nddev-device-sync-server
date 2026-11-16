@@ -122,7 +122,7 @@ impl Store {
             return Err(IdentityError::Capacity);
         }
         sqlx::query("INSERT INTO nds_passkeys(credential_id,user_id,tenant_id,credential,created_at_ms) VALUES ($1,$2,$3,$4,$5)")
-            .bind(key.cred_id().as_ref()).bind(auth.session.owner.user_id.as_str()).bind(auth.session.owner.tenant_id.as_str())
+            .bind::<&[u8]>(key.cred_id().as_ref()).bind(auth.session.owner.user_id.as_str()).bind(auth.session.owner.tenant_id.as_str())
             .bind(serde_json::to_value(key).map_err(unavailable)?).bind(i64::try_from(now).map_err(|_| IdentityError::InvalidInput)?).execute(&mut *tx).await.map_err(unavailable)?;
         tx.commit().await.map_err(unavailable)
 
@@ -140,12 +140,12 @@ impl Store {
         let mut tx = identity.transaction().await?;
         if &issue.session.owner != owner { return Err(IdentityError::Denied); }
         let stored: Option<serde_json::Value> = sqlx::query_scalar("SELECT credential FROM nds_passkeys WHERE credential_id=$1 AND user_id=$2 AND tenant_id=$3 FOR UPDATE")
-            .bind(key.cred_id().as_ref()).bind(owner.user_id.as_str()).bind(owner.tenant_id.as_str()).fetch_optional(&mut *tx).await.map_err(unavailable)?;
+            .bind::<&[u8]>(key.cred_id().as_ref()).bind(owner.user_id.as_str()).bind(owner.tenant_id.as_str()).fetch_optional(&mut *tx).await.map_err(unavailable)?;
         if stored.as_ref() != Some(&original) {
             return Err(IdentityError::Denied);
         }
         sqlx::query("UPDATE nds_passkeys SET credential=$2 WHERE credential_id=$1")
-            .bind(key.cred_id().as_ref())
+            .bind::<&[u8]>(key.cred_id().as_ref())
             .bind(serde_json::to_value(&key).map_err(unavailable)?)
             .execute(&mut *tx)
             .await
