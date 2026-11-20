@@ -3,6 +3,7 @@
   "assets": [
     {
       "repository": "EmbarkStudios/cargo-deny",
+      "tag": "0.20.2",
       "asset": 471598214,
       "size": 4936832,
       "sha256": "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f",
@@ -19,6 +20,7 @@
     },
     {
       "repository": "nextest-rs/nextest",
+      "tag": "cargo-nextest-0.9.151",
       "asset": 703602745,
       "size": 9792418,
       "sha256": "6b284d6fde9670dfb6ee10ea9d9abbc85f95643d3f592472d420d82e257b3a6c",
@@ -35,6 +37,7 @@
     },
     {
       "repository": "Boshen/cargo-shear",
+      "tag": "v1.14.0",
       "asset": 580851857,
       "size": 1587250,
       "sha256": "9004df4eb031a456026c4326ae0d0ce545321527a67be90f4524c1be729dc40e",
@@ -51,6 +54,7 @@
     },
     {
       "repository": "rustsec/rustsec",
+      "tag": "cargo-audit/v0.22.2",
       "asset": 439292222,
       "size": 6648968,
       "sha256": "7fb9497f8594b389e5fce5ef9b92db08432996895b2e0c5a0167a69ed445c428",
