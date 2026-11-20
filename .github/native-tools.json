@@ -3,17 +3,17 @@
   "assets": [
     {
       "repository": "EmbarkStudios/cargo-deny",
-      "tag": "0.20.2",
-      "asset": 471598214,
-      "size": 4936832,
-      "sha256": "9f12ed4c49936e09b48bf862b595cde2fe64fcbd9d74dfacac6131ca824c8d5f",
-      "file": "cargo-deny-0.20.2-x86_64-unknown-linux-musl.tar.gz",
+      "tag": "0.21.0",
+      "asset": 755168773,
+      "size": 5049575,
+      "sha256": "a2170b854ff697e79e39c4c538981c9c1bdd803addbae6719a4cb66b4585a903",
+      "file": "cargo-deny.tgz",
       "members": [
         {
-          "path": "cargo-deny-0.20.2-x86_64-unknown-linux-musl/cargo-deny",
+          "path": "cargo-deny-0.21.0-x86_64-unknown-linux-musl/cargo-deny",
           "file": "cargo-deny",
-          "size": 8844624,
-          "sha256": "b329e25933d01c36dd7c47d84ea5716694f9b7caf53a5003d45674703a8ed54a",
+          "size": 9045488,
+          "sha256": "33c3aeb3c0e154060ee6784ae4fb38dd52d51454138f0596ed86252a8b84375b",
           "executable": true
         }
       ]
@@ -54,17 +54,17 @@
     },
     {
       "repository": "rustsec/rustsec",
-      "tag": "cargo-audit/v0.22.2",
-      "asset": 439292222,
-      "size": 6648968,
-      "sha256": "7fb9497f8594b389e5fce5ef9b92db08432996895b2e0c5a0167a69ed445c428",
-      "file": "cargo-audit-x86_64-unknown-linux-musl-v0.22.2.tgz",
+      "tag": "cargo-audit/v0.23.0",
+      "asset": 731642913,
+      "size": 6481356,
+      "sha256": "4f01c74ed84b2dffd0b1d37012a62cdf2a92c96e25bdf8eec7fcc0d4d3eb7811",
+      "file": "cargo-audit.tgz",
       "members": [
         {
-          "path": "cargo-audit-x86_64-unknown-linux-musl-v0.22.2/cargo-audit",
+          "path": "cargo-audit-x86_64-unknown-linux-musl-v0.23.0/cargo-audit",
           "file": "cargo-audit",
-          "size": 15401728,
-          "sha256": "66f9c8f530950d106c1869ce27ef5a4008bcea53c7716c3ed8117586337ee7d8",
+          "size": 15084320,
+          "sha256": "ae133cc7bdfc6d61d1f9d000da3259423f1a232e6275e9ade45b4b4c67207b64",
           "executable": true
         }
       ]
